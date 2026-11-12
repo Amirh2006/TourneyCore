@@ -46,7 +46,7 @@ from typing import Any, Generic, TypeVar
 import aiofiles
 from pydantic import BaseModel, ValidationError
 
-from core.models import GamingSystem, Match, Player
+from core.models import GamingSystem, Match, Player, generate_entry_code
 
 __all__ = [
     "CorruptDatabaseError",
@@ -399,3 +399,341 @@ class JsonCollection(Generic[ModelT]):
             exists = await asyncio.to_thread(self._path.exists)
             if not exists:
                 await self._write_unlocked([])
+
+
+class StorageManager:
+    """High-level facade over the three JSON collections.
+
+    The manager wires the collections to concrete model classes and exposes
+    intention-revealing operations used by the CLI admin tools, the Telegram
+    bot and the frontend exporter:
+
+    * gaming systems - list, create, read, save, delete;
+    * players - list, create with a unique entry code, redeem a code, save;
+    * matches - list, read, save (single or bulk), delete.
+
+    It never caches documents: every read hits the disk, so the bot and the CLI
+    always observe each other's writes. Mutations are serialized per file by
+    :class:`JsonCollection`.
+
+    Args:
+        data_dir: Directory containing the JSON documents.
+        quarantine_on_corruption: Forwarded to every collection. When enabled,
+            malformed documents are renamed aside instead of raising.
+    """
+
+    def __init__(
+        self,
+        data_dir: Path | str = DEFAULT_DATA_DIR,
+        *,
+        quarantine_on_corruption: bool = False,
+    ) -> None:
+        self._data_dir = Path(data_dir)
+        self._systems: JsonCollection[GamingSystem] = JsonCollection(
+            self._data_dir / SYSTEMS_FILE,
+            GamingSystem,
+            quarantine_on_corruption=quarantine_on_corruption,
+        )
+        self._players: JsonCollection[Player] = JsonCollection(
+            self._data_dir / PLAYERS_FILE,
+            Player,
+            quarantine_on_corruption=quarantine_on_corruption,
+        )
+        self._matches: JsonCollection[Match] = JsonCollection(
+            self._data_dir / MATCHES_FILE,
+            Match,
+            quarantine_on_corruption=quarantine_on_corruption,
+        )
+
+    @property
+    def data_dir(self) -> Path:
+        """Directory holding the JSON documents."""
+
+        return self._data_dir
+
+    @property
+    def systems(self) -> JsonCollection[GamingSystem]:
+        """Raw collection of gaming systems."""
+
+        return self._systems
+
+    @property
+    def players(self) -> JsonCollection[Player]:
+        """Raw collection of players."""
+
+        return self._players
+
+    @property
+    def matches(self) -> JsonCollection[Match]:
+        """Raw collection of matches."""
+
+        return self._matches
+
+    async def initialize(self) -> None:
+        """Create the data directory and any missing document."""
+
+        await asyncio.to_thread(self._data_dir.mkdir, parents=True, exist_ok=True)
+        await self._systems.ensure_document()
+        await self._players.ensure_document()
+        await self._matches.ensure_document()
+
+    # ------------------------------------------------------------------
+    # Gaming systems
+    # ------------------------------------------------------------------
+    async def list_systems(self) -> list[GamingSystem]:
+        """Return every gaming system."""
+
+        return await self._systems.read_all()
+
+    async def get_system(self, system_id: str) -> GamingSystem | None:
+        """Return a gaming system by identifier, or ``None``."""
+
+        return await self._systems.find_one(system_id)
+
+    async def require_system(self, system_id: str) -> GamingSystem:
+        """Return a gaming system or raise :class:`RecordNotFoundError`."""
+
+        system = await self.get_system(system_id)
+        if system is None:
+            raise RecordNotFoundError(f"Gaming system {system_id!r} does not exist.")
+        return system
+
+    async def create_system(
+        self,
+        name: str,
+        *,
+        description: str = "",
+        max_players: int = 16,
+    ) -> GamingSystem:
+        """Create and persist a new gaming system."""
+
+        system = GamingSystem(
+            name=name,
+            description=description,
+            max_players=max_players,
+        )
+        await self._systems.add(system)
+        return system
+
+    async def save_system(self, system: GamingSystem) -> GamingSystem:
+        """Insert or replace a gaming system."""
+
+        return await self._systems.upsert(system)
+
+    async def delete_system(self, system_id: str) -> bool:
+        """Delete a gaming system by identifier."""
+
+        return await self._systems.remove(system_id)
+
+    # ------------------------------------------------------------------
+    # Players
+    # ------------------------------------------------------------------
+    async def list_players(self, system_id: str | None = None) -> list[Player]:
+        """Return players, optionally filtered by gaming system."""
+
+        players = await self._players.read_all()
+        if system_id is None:
+            return players
+        return [player for player in players if player.system_id == system_id]
+
+    async def get_player(self, player_id: str) -> Player | None:
+        """Return a player by identifier, or ``None``."""
+
+        return await self._players.find_one(player_id)
+
+    async def require_player(self, player_id: str) -> Player:
+        """Return a player or raise :class:`RecordNotFoundError`."""
+
+        player = await self.get_player(player_id)
+        if player is None:
+            raise RecordNotFoundError(f"Player {player_id!r} does not exist.")
+        return player
+
+    async def find_player_by_entry_code(self, entry_code: str) -> Player | None:
+        """Look up a player by entry code, ignoring case and separators."""
+
+        normalized = entry_code.strip().upper().replace("-", "").replace(" ", "")
+        for player in await self._players.read_all():
+            if player.entry_code == normalized:
+                return player
+        return None
+
+    async def create_player(
+        self,
+        system_id: str,
+        name: str,
+        *,
+        entry_code: str | None = None,
+    ) -> Player:
+        """Create a pending player with a unique entry code.
+
+        Args:
+            system_id: Gaming system the player belongs to.
+            name: Display name of the player.
+            entry_code: Explicit code, or ``None`` to generate one.
+
+        Raises:
+            DuplicateEntryCodeError: If the code is already in use.
+        """
+
+        await self.require_system(system_id)
+        candidate = Player(
+            system_id=system_id,
+            name=name,
+            entry_code=entry_code or generate_entry_code(),
+        )
+
+        def _mutate(items: list[Player]) -> list[Player]:
+            used_codes = {player.entry_code for player in items}
+            attempts = 0
+            while candidate.entry_code in used_codes:
+                if entry_code is not None:
+                    raise DuplicateEntryCodeError(
+                        f"Entry code {candidate.entry_code!r} is already in use."
+                    )
+                attempts += 1
+                if attempts > 10:
+                    raise StorageError(
+                        "Unable to generate a unique entry code, try again."
+                    )
+                candidate.entry_code = generate_entry_code()
+            return [*items, candidate]
+
+        await self._players.update(_mutate)
+        return candidate
+
+    async def save_player(self, player: Player) -> Player:
+        """Insert or replace a player."""
+
+        return await self._players.upsert(player)
+
+    async def delete_player(self, player_id: str) -> bool:
+        """Delete a player by identifier."""
+
+        return await self._players.remove(player_id)
+
+    async def redeem_entry_code(
+        self,
+        entry_code: str,
+        telegram_id: int,
+        username: str | None = None,
+    ) -> Player:
+        """Pair a Telegram account with a pending player.
+
+        This is Scenario A registration: the player types the code generated by
+        the administrator into the Telegram bot, and the bot calls this method
+        with the sender's identity.
+
+        Args:
+            entry_code: Code printed on the player's ticket.
+            telegram_id: Telegram user id of the sender.
+            username: Optional Telegram username without the leading '@'.
+
+        Raises:
+            RecordNotFoundError: If no player owns the code.
+            StorageError: If the code was already redeemed or the Telegram
+                account is already linked to another player.
+        """
+
+        normalized = entry_code.strip().upper().replace("-", "").replace(" ", "")
+
+        def _mutate(items: list[Player]) -> list[Player]:
+            for index, player in enumerate(items):
+                if player.entry_code != normalized:
+                    continue
+                if player.is_registered:
+                    raise StorageError(
+                        f"Entry code {normalized!r} was already redeemed."
+                    )
+                if any(
+                    other.telegram_id == telegram_id
+                    for other in items
+                    if other.id != player.id
+                ):
+                    raise StorageError(
+                        f"Telegram account {telegram_id} is already linked to "
+                        "another player."
+                    )
+                player.link_telegram(telegram_id, username)
+                updated = list(items)
+                updated[index] = player
+                return updated
+            raise RecordNotFoundError(f"Unknown entry code {normalized!r}.")
+
+        updated_players = await self._players.update(_mutate)
+        for player in updated_players:
+            if player.entry_code == normalized:
+                return player
+        raise RecordNotFoundError(f"Unknown entry code {normalized!r}.")
+
+    # ------------------------------------------------------------------
+    # Matches
+    # ------------------------------------------------------------------
+    async def list_matches(self, system_id: str | None = None) -> list[Match]:
+        """Return matches, optionally filtered by gaming system."""
+
+        matches = await self._matches.read_all()
+        if system_id is None:
+            return matches
+        return [match for match in matches if match.system_id == system_id]
+
+    async def get_match(self, match_id: str) -> Match | None:
+        """Return a match by identifier, or ``None``."""
+
+        return await self._matches.find_one(match_id)
+
+    async def require_match(self, match_id: str) -> Match:
+        """Return a match or raise :class:`RecordNotFoundError`."""
+
+        match = await self.get_match(match_id)
+        if match is None:
+            raise RecordNotFoundError(f"Match {match_id!r} does not exist.")
+        return match
+
+    async def save_match(self, match: Match) -> Match:
+        """Insert or replace a single match."""
+
+        return await self._matches.upsert(match)
+
+    async def save_matches(self, matches: Sequence[Match]) -> None:
+        """Replace the whole match document, used after bracket generation."""
+
+        await self._matches.write_all(matches)
+
+    async def delete_match(self, match_id: str) -> bool:
+        """Delete a match by identifier."""
+
+        return await self._matches.remove(match_id)
+
+    async def delete_matches_for_system(self, system_id: str) -> int:
+        """Delete every match of a gaming system and return the count."""
+
+        removed = 0
+
+        def _mutate(items: list[Match]) -> list[Match]:
+            nonlocal removed
+            remaining = [match for match in items if match.system_id != system_id]
+            removed = len(items) - len(remaining)
+            return remaining
+
+        await self._matches.update(_mutate)
+        return removed
+
+    # ------------------------------------------------------------------
+    # Export
+    # ------------------------------------------------------------------
+    async def export_snapshot(self) -> dict[str, list[dict[str, Any]]]:
+        """Return a JSON-serializable snapshot of the whole database.
+
+        The web frontend consumes this structure directly, which keeps the
+        read model decoupled from the persistence layer.
+        """
+
+        systems = await self._systems.read_all()
+        players = await self._players.read_all()
+        matches = await self._matches.read_all()
+        return {
+            "systems": [item.model_dump(mode="json") for item in systems],
+            "players": [item.model_dump(mode="json") for item in players],
+            "matches": [item.model_dump(mode="json") for item in matches],
+        }
