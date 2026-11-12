@@ -1,0 +1,8 @@
+# TourneyCore - Tournament Management System
+# ============================================
+# Python 3.12+ asynchronous tournament management system
+# for Telegram Bot & Mini-App using pydantic, aiofiles, aiogram
+
+pydantic>=2.10.0
+aiofiles>=23.0.0
+aiogram>=3.30.0
