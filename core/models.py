@@ -266,3 +266,180 @@ class GamingSystem(CoreModel):
         if player_id in self.player_ids:
             self.player_ids.remove(player_id)
             self.updated_at = CoreModel.utc_now()
+
+
+class Player(CoreModel):
+    """A tournament participant linked to a Telegram account.
+
+    Registration follows Scenario A: an administrator generates a unique entry
+    code, hands it to the player out of band, and the player redeems it on the
+    Telegram bot. Redeeming the code pairs the bot account (``telegram_id``)
+    with the pre-created player record, so the bracket can notify them directly.
+    """
+
+    id: str = Field(
+        default_factory=lambda: generate_model_id("plr"),
+        description="Stable identifier of the player.",
+    )
+    system_id: str = Field(
+        min_length=1,
+        description="Identifier of the gaming system the player belongs to.",
+    )
+    name: str = Field(
+        min_length=1,
+        max_length=64,
+        description="In-game display name of the player.",
+    )
+    entry_code: str = Field(
+        min_length=6,
+        max_length=10,
+        description="Administrator-generated registration code.",
+    )
+    telegram_id: int | None = Field(
+        default=None,
+        gt=0,
+        description="Telegram user id once the entry code was redeemed.",
+    )
+    telegram_username: str | None = Field(
+        default=None,
+        max_length=64,
+        description="Optional Telegram username without the leading '@'.",
+    )
+    status: PlayerStatus = Field(
+        default=PlayerStatus.PENDING,
+        description="Current lifecycle state of the player.",
+    )
+    seed: int | None = Field(
+        default=None,
+        ge=1,
+        description="Bracket seed assigned when the tournament starts.",
+    )
+    wins: int = Field(default=0, ge=0, description="Number of matches won.")
+    losses: int = Field(default=0, ge=0, description="Number of matches lost.")
+    created_at: datetime = Field(
+        default_factory=CoreModel.utc_now,
+        description="Creation timestamp in UTC.",
+    )
+    registered_at: datetime | None = Field(
+        default=None,
+        description="Timestamp of a successful entry code redemption.",
+    )
+    eliminated_at: datetime | None = Field(
+        default=None,
+        description="Timestamp of the second (eliminating) loss.",
+    )
+
+    @field_validator("name")
+    @classmethod
+    def _reject_blank_name(cls, value: str) -> str:
+        """Reject a name made only of whitespace."""
+
+        if not value.strip():
+            raise ValueError("Name must not be blank.")
+        return value
+
+    @field_validator("entry_code")
+    @classmethod
+    def _normalize_entry_code(cls, value: str) -> str:
+        """Normalize an entry code to its canonical uppercase form."""
+
+        normalized = value.strip().upper().replace("-", "").replace(" ", "")
+        if not normalized.isalnum():
+            raise ValueError("Entry code must contain letters and digits only.")
+        return normalized
+
+    @field_validator("telegram_username")
+    @classmethod
+    def _normalize_username(cls, value: str | None) -> str | None:
+        """Strip the optional leading '@' from a Telegram username."""
+
+        if value is None:
+            return None
+        return value.lstrip("@")
+
+    @model_validator(mode="after")
+    def _enforce_lifecycle_consistency(self) -> Player:
+        """Ensure status flags match the registration state."""
+
+        if self.status in (PlayerStatus.REGISTERED, PlayerStatus.ACTIVE):
+            if self.telegram_id is None:
+                raise ValueError(
+                    f"A player in status {self.status.value!r} must have a "
+                    "telegram_id."
+                )
+            if self.registered_at is None:
+                raise ValueError(
+                    f"A player in status {self.status.value!r} must have a "
+                    "registered_at timestamp."
+                )
+        if self.status is PlayerStatus.ELIMINATED and self.eliminated_at is None:
+            raise ValueError("An eliminated player must have an eliminated_at timestamp.")
+        return self
+
+    @property
+    def is_registered(self) -> bool:
+        """Return ``True`` when the player redeemed their entry code."""
+
+        return self.telegram_id is not None
+
+    @property
+    def is_eliminated(self) -> bool:
+        """Return ``True`` when the player is out of the tournament."""
+
+        return self.status is PlayerStatus.ELIMINATED
+
+    @property
+    def can_play(self) -> bool:
+        """Return ``True`` when the player may be scheduled in a match."""
+
+        return self.status in (PlayerStatus.REGISTERED, PlayerStatus.ACTIVE)
+
+    def link_telegram(self, telegram_id: int, username: str | None = None) -> None:
+        """Pair a Telegram account with this player by redeeming the code.
+
+        Args:
+            telegram_id: Telegram user id of the player.
+            username: Optional Telegram username without the leading '@'.
+
+        Raises:
+            ValueError: If the player already redeemed an entry code.
+        """
+
+        if self.is_registered:
+            raise ValueError("This player already linked a Telegram account.")
+
+        self.telegram_id = telegram_id
+        self.telegram_username = username.lstrip("@") if username else None
+        self.registered_at = CoreModel.utc_now()
+        self.status = PlayerStatus.REGISTERED
+
+    def mark_active(self) -> None:
+        """Move a registered player into the active tournament state."""
+
+        if not self.is_registered:
+            raise ValueError("Cannot activate a player without a telegram_id.")
+        self.status = PlayerStatus.ACTIVE
+
+    def register_win(self) -> None:
+        """Record a match win for this player."""
+
+        self.wins += 1
+
+    def register_loss(self) -> bool:
+        """Record a match loss and eliminate the player on the second one.
+
+        Returns:
+            ``True`` when this loss eliminated the player from the tournament.
+        """
+
+        self.losses += 1
+        if self.losses >= 2 and self.status is not PlayerStatus.ELIMINATED:
+            self.eliminated_at = CoreModel.utc_now()
+            self.status = PlayerStatus.ELIMINATED
+            return True
+        return False
+
+    def withdraw(self) -> None:
+        """Mark the player as removed by an administrator."""
+
+        self.status = PlayerStatus.WITHDRAWN
