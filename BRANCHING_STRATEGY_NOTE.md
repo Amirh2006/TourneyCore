@@ -40,9 +40,14 @@ $ git branch -a
 ```
 
 Both `develop` and `main` have the same content (Phase 1 complete):
-- 3 commits total
+- 4 commits total, both branches synchronized at `0c21c22`
 - All scaffold infrastructure in place
-- Persian report committed
+- Persian report and this strategy note committed
+- `main` verified as the **default branch** on GitHub (`gh repo edit --default-branch main`)
+
+> **Note:** Phase 1 was committed directly on `develop` before this branching
+> strategy was introduced. Starting with Phase 2, every phase is developed on its
+> own `feature/phase-N` branch as described above.
 
 ### 4. Next Phase (Phase 2) Execution
 
