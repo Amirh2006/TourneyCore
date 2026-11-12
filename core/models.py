@@ -443,3 +443,226 @@ class Player(CoreModel):
         """Mark the player as removed by an administrator."""
 
         self.status = PlayerStatus.WITHDRAWN
+
+
+class Match(CoreModel):
+    """A single bout in a double-elimination bracket.
+
+    Every match knows which bracket it belongs to (:class:`BracketSide`), its
+    ``round`` and ``position`` within that round, and where its participants
+    are forwarded after the result is recorded. The forwarding targets are
+    stored explicitly so that the bracket engine can rebuild the graph after a
+    restart without recomputing the whole tournament:
+
+    * ``next_winner_match_id`` - where the winner advances to.
+    * ``next_loser_match_id`` - where the loser drops to (``None`` in the
+      grand final, because the loser is eliminated).
+    """
+
+    id: str = Field(
+        default_factory=lambda: generate_model_id("m"),
+        description="Stable identifier of the match.",
+    )
+    system_id: str = Field(
+        min_length=1,
+        description="Identifier of the gaming system this match belongs to.",
+    )
+    bracket: BracketSide = Field(
+        description="Bracket the match belongs to.",
+    )
+    round: int = Field(
+        ge=1,
+        description="One-based round number inside the bracket.",
+    )
+    position: int = Field(
+        ge=0,
+        description="Zero-based slot of the match inside its round.",
+    )
+    player1_id: str | None = Field(
+        default=None,
+        description="First player slot, empty until the bracket seeds it.",
+    )
+    player2_id: str | None = Field(
+        default=None,
+        description="Second player slot, empty until the bracket seeds it.",
+    )
+    winner_id: str | None = Field(
+        default=None,
+        description="Player that won the match, once completed.",
+    )
+    loser_id: str | None = Field(
+        default=None,
+        description="Player that lost the match, once completed.",
+    )
+    status: MatchStatus = Field(
+        default=MatchStatus.PENDING,
+        description="Current lifecycle state of the match.",
+    )
+    win_method: WinMethod | None = Field(
+        default=None,
+        description="How the result was decided, once completed.",
+    )
+    score_player1: int | None = Field(
+        default=None,
+        ge=0,
+        description="Optional score of the first player slot.",
+    )
+    score_player2: int | None = Field(
+        default=None,
+        ge=0,
+        description="Optional score of the second player slot.",
+    )
+    next_winner_match_id: str | None = Field(
+        default=None,
+        description="Match the winner advances to, or ``None`` if final.",
+    )
+    next_loser_match_id: str | None = Field(
+        default=None,
+        description="Match the loser drops to, or ``None`` if eliminated.",
+    )
+    is_bye: bool = Field(
+        default=False,
+        description="Whether the match is a walk-through without an opponent.",
+    )
+    created_at: datetime = Field(
+        default_factory=CoreModel.utc_now,
+        description="Creation timestamp in UTC.",
+    )
+    started_at: datetime | None = Field(
+        default=None,
+        description="Timestamp of the administrator start command.",
+    )
+    completed_at: datetime | None = Field(
+        default=None,
+        description="Timestamp of the recorded result.",
+    )
+
+    @model_validator(mode="after")
+    def _enforce_match_consistency(self) -> Match:
+        """Ensure slots, results and status stay mutually consistent."""
+
+        players = {pid for pid in (self.player1_id, self.player2_id) if pid}
+
+        if self.player1_id is not None and self.player1_id == self.player2_id:
+            raise ValueError("A match cannot pair a player with themselves.")
+
+        if self.winner_id is not None:
+            if self.winner_id not in players:
+                raise ValueError("winner_id must be one of the two players.")
+            if not self.is_bye:
+                if self.loser_id is None:
+                    raise ValueError("A decided match requires a loser_id.")
+                if self.loser_id == self.winner_id:
+                    raise ValueError("winner_id and loser_id must differ.")
+
+        if self.loser_id is not None and self.loser_id not in players:
+            raise ValueError("loser_id must be one of the two players.")
+
+        if self.status is MatchStatus.READY and len(players) != 2:
+            raise ValueError("A READY match requires both player slots to be filled.")
+
+        if self.status is MatchStatus.ACTIVE:
+            if len(players) != 2:
+                raise ValueError("An ACTIVE match requires both player slots.")
+            if self.started_at is None:
+                raise ValueError("An ACTIVE match requires a started_at timestamp.")
+
+        if self.status is MatchStatus.COMPLETED:
+            if self.winner_id is None:
+                raise ValueError("A COMPLETED match requires a winner_id.")
+            if self.completed_at is None:
+                raise ValueError("A COMPLETED match requires a completed_at timestamp.")
+            if not self.is_bye and self.win_method is None:
+                raise ValueError("A COMPLETED match requires a win_method.")
+
+        return self
+
+    @property
+    def has_both_players(self) -> bool:
+        """Return ``True`` when both player slots are filled."""
+
+        return self.player1_id is not None and self.player2_id is not None
+
+    @property
+    def is_ready(self) -> bool:
+        """Return ``True`` when the match can be started by an administrator."""
+
+        return self.has_both_players and self.status in (
+            MatchStatus.PENDING,
+            MatchStatus.READY,
+        )
+
+    @property
+    def is_completed(self) -> bool:
+        """Return ``True`` when a result has been recorded."""
+
+        return self.status is MatchStatus.COMPLETED
+
+    def other_player(self, player_id: str) -> str | None:
+        """Return the opponent of ``player_id``, if the opponent is known."""
+
+        if player_id == self.player1_id:
+            return self.player2_id
+        if player_id == self.player2_id:
+            return self.player1_id
+        return None
+
+    def assign_players(self, player1_id: str | None, player2_id: str | None) -> None:
+        """Fill or replace both player slots and refresh the status.
+
+        Args:
+            player1_id: Player for the first slot, or ``None`` for a bye slot.
+            player2_id: Player for the second slot, or ``None`` for a bye slot.
+        """
+
+        self.status = MatchStatus.PENDING
+        self.player1_id = player1_id
+        self.player2_id = player2_id
+        self.status = MatchStatus.READY if self.has_both_players else MatchStatus.PENDING
+
+    def start(self) -> None:
+        """Mark the match as started by an administrator."""
+
+        if self.status is not MatchStatus.READY:
+            raise ValueError("Only a READY match can be started.")
+        self.started_at = CoreModel.utc_now()
+        self.status = MatchStatus.ACTIVE
+
+    def complete(
+        self,
+        winner_id: str,
+        method: WinMethod = WinMethod.NORMAL,
+        score_player1: int | None = None,
+        score_player2: int | None = None,
+    ) -> None:
+        """Record the result of the match.
+
+        Args:
+            winner_id: Identifier of the winning player.
+            method: How the match was decided.
+            score_player1: Optional score for the first player slot.
+            score_player2: Optional score for the second player slot.
+
+        Raises:
+            ValueError: If the winner is not one of the two players or the
+                match is already completed.
+        """
+
+        if self.status is MatchStatus.COMPLETED:
+            raise ValueError(f"Match {self.id} is already completed.")
+        if winner_id not in {self.player1_id, self.player2_id}:
+            raise ValueError("winner_id must be one of the two players.")
+
+        loser_id = (
+            self.player2_id if winner_id == self.player1_id else self.player1_id
+        )
+        if loser_id is None:
+            raise ValueError("Cannot record a winner without an opponent.")
+
+        self.score_player1 = score_player1
+        self.score_player2 = score_player2
+        self.loser_id = loser_id
+        self.winner_id = winner_id
+        self.win_method = method
+        self.completed_at = CoreModel.utc_now()
+        self.status = MatchStatus.COMPLETED
