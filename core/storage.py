@@ -39,6 +39,7 @@ import os
 import uuid
 from collections.abc import Callable, Sequence
 from contextlib import suppress
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Generic, TypeVar
 
@@ -158,3 +159,243 @@ async def read_text_if_exists(path: Path) -> str | None:
             return await handle.read()
     except FileNotFoundError:
         return None
+
+
+class JsonCollection(Generic[ModelT]):
+    """A single JSON document holding a homogeneous list of models.
+
+    The collection is the lowest persistence unit of the project. It owns the
+    file path, the Pydantic model used for validation and an
+    :class:`asyncio.Lock` that serializes read-modify-write cycles.
+
+    Args:
+        path: Location of the JSON document.
+        model: Pydantic model class used to validate every record.
+        quarantine_on_corruption: When ``True``, a document that is not valid
+            JSON is renamed aside and treated as empty instead of raising.
+            Disabled by default so that corrupt state is never lost silently.
+        lock: Optional shared lock, useful for tests or multi-collection
+            transactions.
+    """
+
+    def __init__(
+        self,
+        path: Path,
+        model: type[ModelT],
+        *,
+        quarantine_on_corruption: bool = False,
+        lock: asyncio.Lock | None = None,
+    ) -> None:
+        self._path = path
+        self._model = model
+        self._quarantine_on_corruption = quarantine_on_corruption
+        self._lock = lock if lock is not None else asyncio.Lock()
+
+    @property
+    def path(self) -> Path:
+        """Location of the backing JSON document."""
+
+        return self._path
+
+    @property
+    def model(self) -> type[ModelT]:
+        """Pydantic model class used to validate records."""
+
+        return self._model
+
+    @property
+    def lock(self) -> asyncio.Lock:
+        """Lock that serializes mutations of this collection."""
+
+        return self._lock
+
+    # ------------------------------------------------------------------
+    # Serialization helpers
+    # ------------------------------------------------------------------
+    @staticmethod
+    def serialize(items: Sequence[BaseModel]) -> str:
+        """Serialize models to a pretty-printed JSON array with a newline."""
+
+        payload = [item.model_dump(mode="json") for item in items]
+        return json.dumps(payload, ensure_ascii=False, indent=JSON_INDENT) + "\n"
+
+    def _validate_payload(self, payload: list[Any]) -> list[ModelT]:
+        """Validate a decoded JSON array against the collection model.
+
+        Raises:
+            DatabaseValidationError: If one or more records are invalid.
+        """
+
+        items: list[ModelT] = []
+        errors: list[dict[str, Any]] = []
+
+        for index, raw in enumerate(payload):
+            if not isinstance(raw, dict):
+                errors.append(
+                    {
+                        "index": index,
+                        "loc": (index,),
+                        "msg": "Record must be a JSON object.",
+                        "type": "type_error.object",
+                    }
+                )
+                continue
+            try:
+                items.append(self._model.model_validate(raw))
+            except ValidationError as exc:
+                for error in exc.errors():
+                    errors.append({"index": index, **error})
+
+        if errors:
+            raise DatabaseValidationError(self._path, errors)
+        return items
+
+    # ------------------------------------------------------------------
+    # Internal unlocked primitives
+    # ------------------------------------------------------------------
+    async def _read_unlocked(self) -> list[ModelT]:
+        """Read and validate the document without acquiring the lock."""
+
+        raw = await read_text_if_exists(self._path)
+        if raw is None or not raw.strip():
+            return []
+
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            if self._quarantine_on_corruption:
+                await self._quarantine_file()
+                return []
+            raise CorruptDatabaseError(self._path, str(exc)) from exc
+
+        if not isinstance(payload, list):
+            if self._quarantine_on_corruption:
+                await self._quarantine_file()
+                return []
+            raise CorruptDatabaseError(
+                self._path, "Top-level JSON value must be an array."
+            )
+
+        return self._validate_payload(payload)
+
+    async def _write_unlocked(self, items: Sequence[ModelT]) -> None:
+        """Atomically persist ``items`` without acquiring the lock."""
+
+        await atomic_write_text(self._path, self.serialize(items))
+
+    async def _quarantine_file(self) -> Path | None:
+        """Move a corrupt document aside so the collection can restart empty.
+
+        Returns:
+            The new path of the quarantined file, or ``None`` when the document
+            did not exist.
+        """
+
+        if not await asyncio.to_thread(self._path.exists):
+            return None
+
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        target = self._path.with_name(
+            f"{self._path.stem}.corrupt-{stamp}{self._path.suffix}"
+        )
+        await asyncio.to_thread(os.replace, self._path, target)
+        return target
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+    async def read_all(self) -> list[ModelT]:
+        """Return every record in the document, validated against the model."""
+
+        async with self._lock:
+            return await self._read_unlocked()
+
+    async def write_all(self, items: Sequence[ModelT]) -> None:
+        """Replace the whole document with ``items`` atomically."""
+
+        async with self._lock:
+            await self._write_unlocked(items)
+
+    async def update(
+        self, mutator: Callable[[list[ModelT]], list[ModelT]]
+    ) -> list[ModelT]:
+        """Apply ``mutator`` to the current records and persist the result.
+
+        The entire read-modify-write cycle runs under the collection lock, so
+        concurrent callers cannot lose updates. ``mutator`` may raise to abort
+        the transaction; nothing is written in that case.
+
+        Args:
+            mutator: Pure function that receives the current records and
+                returns the new list to persist.
+
+        Returns:
+            The list returned by ``mutator``.
+        """
+
+        async with self._lock:
+            current = await self._read_unlocked()
+            updated = mutator(current)
+            await self._write_unlocked(updated)
+            return updated
+
+    async def find_one(self, identifier: str, *, key: str = "id") -> ModelT | None:
+        """Return the first record whose ``key`` equals ``identifier``."""
+
+        for item in await self.read_all():
+            if getattr(item, key, None) == identifier:
+                return item
+        return None
+
+    async def add(self, item: ModelT) -> ModelT:
+        """Append ``item`` to the document."""
+
+        await self.update(lambda items: [*items, item])
+        return item
+
+    async def upsert(self, item: ModelT, *, key: str = "id") -> ModelT:
+        """Insert ``item`` or replace the record sharing the same ``key``."""
+
+        identifier = getattr(item, key)
+
+        def _mutate(items: list[ModelT]) -> list[ModelT]:
+            for index, existing in enumerate(items):
+                if getattr(existing, key) == identifier:
+                    replaced = list(items)
+                    replaced[index] = item
+                    return replaced
+            return [*items, item]
+
+        await self.update(_mutate)
+        return item
+
+    async def remove(self, identifier: str, *, key: str = "id") -> bool:
+        """Delete the record matching ``identifier``.
+
+        Returns:
+            ``True`` when a record was removed, ``False`` otherwise.
+        """
+
+        removed = False
+
+        def _mutate(items: list[ModelT]) -> list[ModelT]:
+            nonlocal removed
+            remaining = [item for item in items if getattr(item, key) != identifier]
+            removed = len(remaining) != len(items)
+            return remaining
+
+        await self.update(_mutate)
+        return removed
+
+    async def clear(self) -> None:
+        """Persist an empty document."""
+
+        await self.write_all([])
+
+    async def ensure_document(self) -> None:
+        """Create an empty JSON array when the document is missing."""
+
+        async with self._lock:
+            exists = await asyncio.to_thread(self._path.exists)
+            if not exists:
+                await self._write_unlocked([])
