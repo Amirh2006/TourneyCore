@@ -21,7 +21,7 @@ import uuid
 from datetime import datetime, timezone
 from enum import Enum
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # Characters that are easy to read out loud and hard to confuse (no O/0/I/1).
 ENTRY_CODE_ALPHABET: str = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
@@ -145,3 +145,124 @@ def generate_entry_code(length: int = DEFAULT_ENTRY_CODE_LENGTH) -> str:
         raise ValueError("Entry code length must be between 6 and 10 characters.")
 
     return "".join(secrets.choice(ENTRY_CODE_ALPHABET) for _ in range(length))
+
+
+class GamingSystem(CoreModel):
+    """A tournament for a single game title.
+
+    A gaming system groups players and matches together. Administrators create
+    one system per event (for example ``"Tekken 8 - Friday Cup"``), open
+    registration, seed the bracket and then drive matches through the CLI.
+    """
+
+    id: str = Field(
+        default_factory=lambda: generate_model_id("sys"),
+        description="Stable identifier of the gaming system.",
+    )
+    name: str = Field(
+        min_length=1,
+        max_length=80,
+        description="Display name of the game or event.",
+    )
+    description: str = Field(
+        default="",
+        max_length=280,
+        description="Optional short description shown in the mini-app.",
+    )
+    max_players: int = Field(
+        default=16,
+        ge=2,
+        le=512,
+        description="Maximum number of players that may register.",
+    )
+    status: SystemStatus = Field(
+        default=SystemStatus.DRAFT,
+        description="Current lifecycle state of the tournament.",
+    )
+    registration_open: bool = Field(
+        default=False,
+        description="Whether players may still redeem entry codes.",
+    )
+    player_ids: list[str] = Field(
+        default_factory=list,
+        description="Ordered list of player identifiers; the order is the seed.",
+    )
+    created_at: datetime = Field(
+        default_factory=CoreModel.utc_now,
+        description="Creation timestamp in UTC.",
+    )
+    updated_at: datetime = Field(
+        default_factory=CoreModel.utc_now,
+        description="Last modification timestamp in UTC.",
+    )
+
+    @field_validator("name")
+    @classmethod
+    def _reject_blank_name(cls, value: str) -> str:
+        """Reject a name made only of whitespace."""
+
+        if not value.strip():
+            raise ValueError("Name must not be blank.")
+        return value
+
+    @field_validator("player_ids")
+    @classmethod
+    def _reject_duplicate_players(cls, value: list[str]) -> list[str]:
+        """Reject a roster that lists the same player twice."""
+
+        if len(value) != len(set(value)):
+            raise ValueError("player_ids must not contain duplicates.")
+        return value
+
+    @model_validator(mode="after")
+    def _enforce_capacity(self) -> GamingSystem:
+        """Keep the roster within the configured capacity."""
+
+        if len(self.player_ids) > self.max_players:
+            raise ValueError(
+                f"player_ids contains {len(self.player_ids)} entries but "
+                f"max_players is {self.max_players}."
+            )
+        return self
+
+    @property
+    def player_count(self) -> int:
+        """Return the number of players currently in the roster."""
+
+        return len(self.player_ids)
+
+    @property
+    def is_full(self) -> bool:
+        """Return ``True`` when no further player may register."""
+
+        return self.player_count >= self.max_players
+
+    @property
+    def can_start(self) -> bool:
+        """Return ``True`` when a double-elimination bracket is possible."""
+
+        return self.player_count >= 2 and self.status is SystemStatus.REGISTRATION
+
+    def add_player(self, player_id: str) -> None:
+        """Append a player to the roster while respecting capacity.
+
+        Args:
+            player_id: Identifier of the player to enroll.
+
+        Raises:
+            ValueError: If the roster is full or the player is already listed.
+        """
+
+        if self.is_full:
+            raise ValueError("Cannot add player: the gaming system is full.")
+        if player_id in self.player_ids:
+            raise ValueError(f"Player {player_id!r} is already enrolled.")
+        self.player_ids.append(player_id)
+        self.updated_at = CoreModel.utc_now()
+
+    def remove_player(self, player_id: str) -> None:
+        """Remove a player from the roster, ignoring unknown identifiers."""
+
+        if player_id in self.player_ids:
+            self.player_ids.remove(player_id)
+            self.updated_at = CoreModel.utc_now()
