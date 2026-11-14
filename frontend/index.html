@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <meta name="color-scheme" content="dark light" />
+    <meta
+      name="description"
+      content="Live double-elimination bracket for TourneyCore tournaments."
+    />
+    <title>TourneyCore — Live Bracket</title>
+    <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="styles.css" />
+    <script src="https://telegram.org/js/telegram-web-app.js" defer></script>
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/">
+        <span class="brand__mark" aria-hidden="true">🏆</span>
+        <span class="brand__text">TourneyCore</span>
+      </a>
+      <div class="topbar__actions">
+        <label class="select">
+          <span class="sr-only">Tournament</span>
+          <select id="system-select"></select>
+        </label>
+        <button
+          id="refresh-button"
+          class="icon-button"
+          type="button"
+          title="Refresh now"
+          aria-label="Refresh now"
+        >
+          ⟳
+        </button>
+        <button
+          id="theme-button"
+          class="icon-button"
+          type="button"
+          title="Toggle theme"
+          aria-label="Toggle theme"
+        >
+          🌙
+        </button>
+      </div>
+    </header>
+
+    <main class="shell">
+      <div id="alert" class="alert" role="status" hidden></div>
+
+      <section class="hero" id="hero" hidden>
+        <div class="hero__text">
+          <p class="eyebrow" id="hero-status">Tournament</p>
+          <h1 id="hero-title">—</h1>
+          <p class="hero__description" id="hero-description"></p>
+        </div>
+        <div class="stats" id="stats"></div>
+      </section>
+
+      <section class="champion" id="champion" hidden>
+        <span class="champion__crown" aria-hidden="true">🏆</span>
+        <div>
+          <p class="eyebrow">Champion</p>
+          <h2 id="champion-name">—</h2>
+        </div>
+      </section>
+
+      <section class="panel" id="standings-panel" hidden>
+        <div class="panel__head">
+          <h2>Standings</h2>
+          <span class="panel__hint" id="standings-hint"></span>
+        </div>
+        <div class="table-wrap">
+          <table class="standings">
+            <caption class="sr-only">
+              Standings ordered by losses, then wins
+            </caption>
+            <thead>
+              <tr>
+                <th scope="col">#</th>
+                <th scope="col">Player</th>
+                <th scope="col">W–L</th>
+                <th scope="col">Status</th>
+              </tr>
+            </thead>
+            <tbody id="standings-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="brackets" id="brackets"></section>
+
+      <p class="empty" id="empty-state" hidden>
+        No tournaments yet. Create one with the admin CLI:
+        <code>python -m cli.admin init "Friday Cup"</code>
+      </p>
+    </main>
+
+    <footer class="footer">
+      <span id="footer-status">Loading…</span>
+      <span class="footer__dot" aria-hidden="true">•</span>
+      <span>Read-only live view</span>
+    </footer>
+
+    <noscript>
+      <p class="alert">The TourneyCore mini-app needs JavaScript enabled.</p>
+    </noscript>
+  </body>
+</html>
