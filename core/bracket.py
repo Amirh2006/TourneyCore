@@ -1,77 +1,208 @@
 """Double-elimination bracket progression engine for TourneyCore.
 
-This module implements the standard double-elimination tournament structure
-where every player starts in the winners bracket. A single loss sends them
-to the losers bracket, and a second loss eliminates them from the tournament.
+The engine is deliberately framework independent: it takes plain lists of
+:class:`~core.models.Match` and :class:`~core.models.Player` objects, mutates
+them in memory and returns the matches that were touched. Persisting the
+result is the caller's job (normally through
+:class:`~core.storage.StorageManager`).
 
-The design philosophy is:
-- Keep the bracket logic framework-independent (pure functions, no I/O).
-- Model every match with explicit `next_winner_match_id` and `next_loser_match_id`
-  so the bracket graph can be rebuilt after a restart without recomputing
-  the entire tree.
-- Validation happens through the :class:`~core.models.Match` model; this
-  module only wires matches together.
+Bracket graph
+-------------
+Every match stores two forwarding pointers:
+
+* ``next_winner_match_id`` - the match the winner advances to.
+* ``next_loser_match_id`` - the match the loser drops into, or ``None`` when a
+  loss means elimination.
+
+Because the graph is stored explicitly, a tournament can be rebuilt after a
+restart without recomputing the whole tree. :func:`build_bracket` writes those
+pointers once; :func:`advance_match` only follows them.
+
+Grand final rules
+-----------------
+``GRAND_FINAL`` round 1 is the first final: winners-bracket champion (slot 1)
+against the losers-bracket champion (slot 2). If the winners-bracket champion
+wins, the tournament ends. If the losers-bracket champion wins, both players
+now have one loss and the round-2 reset match decides the title.
 
 Exported symbols
 ----------------
-- ``advance_match`` - Record a match result and return the two matches
-  that need to be updated next (winner and loser).
-- ``is_tournament_over`` - Check whether only one player remains active.
-- ``find_next_match`` - Locate the next pending match for a given player
-  or side of the bracket.
-- ``make_grand_final`` - Build the two grand-final matches when the
-  winners-bracket winner emerges and the losers-bracket runner-up is known.
+``advance_match``
+    Record a result and start the follow-up matches.
+``build_bracket``
+    Create the full match graph for a set of players.
+``find_next_match``
+    Locate the next playable match for a player.
+``is_tournament_over``
+    Decide whether a single player is left standing.
+``make_grand_final``
+    Ensure the final matches exist and are seeded.
 """
 
 from __future__ import annotations
 
-import itertools
-from collections import defaultdict
-from typing import Any, Dict, List, Optional, Tuple
+import math
+from typing import Iterable, Sequence
 
 from core.models import (
     BracketSide,
-    GamingSystem,
     Match,
     MatchStatus,
     Player,
     PlayerStatus,
-    SystemStatus,
     WinMethod,
-    generate_entry_code,
 )
 
 __all__ = [
     "advance_match",
-    "is_tournament_over",
+    "build_bracket",
     "find_next_match",
+    "is_tournament_over",
     "make_grand_final",
-    "BracketSide",
 ]
+
+#: Match states that still expect a result.
+_OPEN_STATUSES = (MatchStatus.PENDING, MatchStatus.READY)
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _system_matches(system_id: str, matches: List[Match]) -> List[Match]:
-    """Return matches belonging to a given system."""
-    return [m for m in matches if m.system_id == system_id]
+
+def _index(matches: Iterable[Match]) -> dict[str, Match]:
+    """Return a lookup table keyed by match id."""
+
+    return {match.id: match for match in matches}
 
 
-def _next_winner(matches: List[Match], match_id: str) -> Optional[Match]:
-    """Return the winners-bracket next match for ``match_id``."""
-    for m in matches:
-        if m.next_winner_match_id == match_id:
-            return m
-    return None
+def _require(index: dict[str, Match], match_id: str) -> Match:
+    """Return the match with ``match_id`` or raise a helpful error."""
+
+    try:
+        return index[match_id]
+    except KeyError:
+        raise ValueError(f"Match {match_id!r} not found in this tournament.") from None
 
 
-def _next_loser(matches: List[Match], match_id: str) -> Optional[Match]:
-    """Return the losers-bracket next match for ``match_id``."""
-    for m in matches:
-        if m.next_loser_match_id == match_id:
-            return m
-    return None
+def _slot_for(source: Match, target: Match, *, is_loser: bool) -> int:
+    """Return the target slot (0 or 1) that a participant must occupy.
+
+    The mapping is derived from the canonical double-elimination layout that
+    :func:`build_bracket` produces, so the two functions must stay in sync.
+    """
+
+    if target.bracket is BracketSide.WINNERS:
+        # Winners of (round, position) feed (round + 1, position // 2):
+        # even positions take slot 0, odd positions take slot 1.
+        return source.position % 2
+
+    if target.bracket is BracketSide.LOSERS:
+        if source.bracket is BracketSide.WINNERS:
+            # A winners-bracket loser drops in: round 1 pairs losers two by
+            # two (slot = position parity), later rounds enter the "major"
+            # losers round on the second slot.
+            if source.round == 1:
+                return source.position % 2
+            return 1
+        # Losers-bracket winner moving up. Odd ("minor") rounds feed the
+        # following major round on slot 0; even ("major") rounds feed the
+        # next minor round using position parity.
+        if source.round % 2 == 1:
+            return 0
+        return source.position % 2
+
+    # Grand final: the winners-bracket champion owns slot 0, the
+    # losers-bracket representative owns slot 1.
+    if source.bracket is BracketSide.WINNERS:
+        return 1 if is_loser else 0
+    return 1
+
+
+def _offer(target: Match, player_id: str | None, slot: int) -> None:
+    """Place ``player_id`` into ``slot`` and mark the target ready if full."""
+
+    if not player_id:
+        return
+
+    if slot == 0:
+        if target.player1_id not in (None, player_id):
+            raise ValueError(
+                f"Match {target.id!r} already has a different player in slot 0."
+            )
+        target.player1_id = player_id
+    else:
+        if target.player2_id not in (None, player_id):
+            raise ValueError(
+                f"Match {target.id!r} already has a different player in slot 1."
+            )
+        target.player2_id = player_id
+
+    if target.status is MatchStatus.PENDING and target.has_both_players:
+        target.status = MatchStatus.READY
+
+
+def _seed_order(size: int) -> list[int]:
+    """Return the standard 1-based seeding order for a bracket of ``size``.
+
+    Example: ``size == 8`` returns ``[1, 8, 4, 5, 2, 7, 3, 6]`` so that seed 1
+    plays seed 8, seed 4 plays seed 5, and so on.
+    """
+
+    order = [1]
+    while len(order) < size:
+        block = len(order) * 2
+        expanded: list[int] = []
+        for seed in order:
+            expanded.append(seed)
+            expanded.append(block + 1 - seed)
+        order = expanded
+    return order
+
+
+def _update_players(
+    players: Sequence[Player] | None,
+    winner_id: str,
+    loser_id: str,
+) -> None:
+    """Apply the win/loss counters and elimination rule to player records."""
+
+    if players is None:
+        return
+
+    by_id = {player.id: player for player in players}
+    winner = by_id.get(winner_id)
+    loser = by_id.get(loser_id)
+    if winner is not None:
+        winner.register_win()
+    if loser is not None:
+        loser.register_loss()
+
+
+def _advance_grand_final(index: dict[str, Match], match: Match) -> tuple[Match | None, Match | None]:
+    """Handle a completed grand-final match.
+
+    A round-1 final only needs a rematch when the losers-bracket champion wins,
+    because that result hands the winners-bracket champion their first loss.
+    """
+
+    if match.round != 1 or match.next_winner_match_id is None:
+        return None, None
+
+    reset = index.get(match.next_winner_match_id)
+    if reset is None:
+        return None, None
+
+    # Slot 0 always holds the winners-bracket champion. If they won the first
+    # final the title is decided and the reset match is never played.
+    if match.winner_id == match.player1_id:
+        return None, None
+
+    if match.player1_id is None or match.player2_id is None:
+        return None, None
+
+    reset.assign_players(match.player1_id, match.player2_id)
+    return reset, None
 
 
 # ---------------------------------------------------------------------------
@@ -79,389 +210,334 @@ def _next_loser(matches: List[Match], match_id: str) -> Optional[Match]:
 # ---------------------------------------------------------------------------
 
 
+def build_bracket(system_id: str, player_ids: Sequence[str]) -> list[Match]:
+    """Create the full double-elimination match graph for ``player_ids``.
+
+    Players are seeded in the order given (first element is seed 1). The
+    function returns every match of the tournament, already linked through
+    ``next_winner_match_id`` / ``next_loser_match_id``. First-round matches are
+    populated and marked ``READY``; later matches fill in as results arrive.
+
+    Args:
+        system_id: Identifier of the owning gaming system.
+        player_ids: Two or more unique player identifiers.
+
+    Returns:
+        A list of :class:`~core.models.Match` objects.
+
+    Raises:
+        ValueError: If fewer than two players are supplied, identifiers are not
+            unique, or the count is not a power of two.
+
+    Note:
+        Non power-of-two fields require bye scheduling, which is not part of
+        this engine yet. Pad the roster to 2, 4, 8, 16... players or schedule
+        explicit walkovers before calling this function.
+    """
+
+    roster = list(player_ids)
+    if len(roster) < 2:
+        raise ValueError("A double-elimination bracket needs at least two players.")
+    if len(set(roster)) != len(roster):
+        raise ValueError("Player identifiers must be unique.")
+
+    size = len(roster)
+    if size & (size - 1):
+        raise ValueError(
+            "build_bracket requires a power-of-two player count "
+            f"(got {size}). Pad the roster or schedule byes first."
+        )
+
+    rounds = int(math.log2(size))
+    matches: list[Match] = []
+    winners: dict[tuple[int, int], Match] = {}
+    losers: dict[tuple[int, int], Match] = {}
+
+    def new_match(bracket: BracketSide, round_no: int, position: int) -> Match:
+        match = Match(
+            system_id=system_id,
+            bracket=bracket,
+            round=round_no,
+            position=position,
+        )
+        matches.append(match)
+        return match
+
+    # --- grand final slots (created first so links can point at them) ------
+    grand_final_1 = new_match(BracketSide.GRAND_FINAL, 1, 0)
+    grand_final_2 = new_match(BracketSide.GRAND_FINAL, 2, 0)
+    grand_final_1.next_winner_match_id = grand_final_2.id
+    grand_final_2.next_winner_match_id = None
+    grand_final_2.next_loser_match_id = None
+
+    # --- winners bracket ---------------------------------------------------
+    for round_no in range(1, rounds + 1):
+        count = size // (2**round_no)
+        for position in range(count):
+            winners[(round_no, position)] = new_match(
+                BracketSide.WINNERS, round_no, position
+            )
+
+    # --- losers bracket ----------------------------------------------------
+    for level in range(1, rounds):
+        count = size // (2 ** (level + 1))
+        for position in range(count):
+            losers[(2 * level - 1, position)] = new_match(
+                BracketSide.LOSERS, 2 * level - 1, position
+            )
+            losers[(2 * level, position)] = new_match(
+                BracketSide.LOSERS, 2 * level, position
+            )
+
+    # --- link the winners bracket -----------------------------------------
+    for round_no in range(1, rounds + 1):
+        count = size // (2**round_no)
+        for position in range(count):
+            match = winners[(round_no, position)]
+
+            if round_no < rounds:
+                match.next_winner_match_id = winners[(round_no + 1, position // 2)].id
+            else:
+                match.next_winner_match_id = grand_final_1.id
+
+            if rounds == 1:
+                # Two-player event: the opening match is also the winners
+                # final, so the loser still earns a place in the grand final.
+                match.next_loser_match_id = grand_final_1.id
+            elif round_no == 1:
+                match.next_loser_match_id = losers[(1, position // 2)].id
+            else:
+                match.next_loser_match_id = losers[(2 * (round_no - 1), position)].id
+
+    # --- link the losers bracket ------------------------------------------
+    for level in range(1, rounds):
+        count = size // (2 ** (level + 1))
+        minor = 2 * level - 1
+        major = 2 * level
+        for position in range(count):
+            minor_match = losers[(minor, position)]
+            major_match = losers[(major, position)]
+
+            minor_match.next_winner_match_id = major_match.id
+            minor_match.next_loser_match_id = None
+            major_match.next_loser_match_id = None
+
+            if level < rounds - 1:
+                major_match.next_winner_match_id = losers[
+                    (major + 1, position // 2)
+                ].id
+            else:
+                major_match.next_winner_match_id = grand_final_1.id
+
+    # --- seed the first winners round -------------------------------------
+    slots: list[str | None] = [None] * size
+    order = _seed_order(size)
+    for position, seed in enumerate(order):
+        slots[position] = roster[seed - 1]
+
+    for position in range(size // 2):
+        winners[(1, position)].assign_players(
+            slots[2 * position], slots[2 * position + 1]
+        )
+
+    return matches
+
+
 def advance_match(
-    matches: List[Match],
+    matches: list[Match],
     match_id: str,
     winner_id: str,
-    loser_id: str,
+    *,
     method: WinMethod = WinMethod.NORMAL,
-) -> Tuple[Optional[Match], Optional[Match]]:
-    """Record the result of ``match_id`` and return the matches that must be
-    started next.
+    score_player1: int | None = None,
+    score_player2: int | None = None,
+    players: Sequence[Player] | None = None,
+) -> tuple[Match | None, Match | None]:
+    """Record the result of ``match_id`` and seed the follow-up matches.
 
-    Parameters
-    ----------
-    matches:
-        All matches of the tournament (usually ``await storage.list_matches(system_id)``).
-    match_id:
-        The match that just finished.
-    winner_id:
-        Player who won.
-    loser_id:
-        Player who lost.
-    method:
-        How the result was decided (``WinMethod.NORMAL`` or
-        ``WinMethod.WALKOVER``).
+    Args:
+        matches: Every match of the tournament (modified in place).
+        match_id: Identifier of the match that just finished.
+        winner_id: Player who won; must be one of the two participants.
+        method: How the result was decided (normal play or walkover).
+        score_player1: Optional score for the first slot.
+        score_player2: Optional score for the second slot.
+        players: Optional player records. When supplied, win/loss counters are
+            updated and a second loss eliminates the player.
 
-    Returns
-    -------
-    ``(next_winner_match, next_loser_match)``
+    Returns:
+        ``(next_winner_match, next_loser_match)`` - the matches that received a
+        participant, or ``None`` where no such match exists. Both targets are
+        marked ``READY`` once their two slots are filled.
 
-    Each element is a :class:`~core.models.Match` object that should be
-    transitioned to ``READY`` status, or ``None`` if no such match exists
-    (e.g. the tournament is already at the grand final stage).
-
-    The function also updates the following fields on the completed match:
-
-    - ``match.winner_id`` / ``match.loser_id``
-    - ``match.win_method``
-    - ``match.score_player1`` / ``match.score_player2`` (if provided by the
-      caller via the ``Match`` object — this module does *not* store scores
-      beyond what the model already tracks).
-
-    Raises
-    ------
-    ``ValueError``
-        If ``winner_id`` is not one of the two players in the match, or if
-        the match is already completed.
+    Raises:
+        ValueError: If the match is unknown, already completed, or ``winner_id``
+            is not a participant.
     """
 
-    # --- locate the match ---------------------------------------------------
-    match = next((m for m in matches if m.id == match_id), None)
-    if match is None:
-        raise ValueError(f"Match {match_id!r} not found in tournament.")
+    index = _index(matches)
+    match = _require(index, match_id)
+
     if match.status is MatchStatus.COMPLETED:
         raise ValueError(f"Match {match_id!r} is already completed.")
+    if match.player1_id is None and match.player2_id is None:
+        raise ValueError(f"Match {match_id!r} has no players assigned.")
 
-    # --- validate participants -----------------------------------------------
-    players_in_match = {match.player1_id, match.player2_id}
-    if winner_id not in players_in_match:
-        raise ValueError("winner_id must be one of the two players in the match.")
-    if loser_id not in players_in_match:
-        raise ValueError("loser_id must be one of the two players in the match.")
-    if winner_id == loser_id:
-        raise ValueError("winner_id and loser_id must be different players.")
+    # ``Match.complete`` performs all validation after the whole result has
+    # been assembled, which avoids tripping Pydantic's assignment validators
+    # with a half-written state.
+    match.complete(winner_id, method, score_player1, score_player2)
 
-    # --- persist the result -------------------------------------------------
-    match.winner_id = winner_id
-    match.loser_id = loser_id
-    match.win_method = method
-    match.status = MatchStatus.COMPLETED
+    if match.loser_id is not None:
+        _update_players(players, winner_id, match.loser_id)
 
-    # --- determine where the winner advances --------------------------------
-    # In a double-elimination bracket the winner of a winners-bracket match
-    # moves to the next winners-bracket match. The winner of a losers-bracket
-    # match moves to the *next* losers-bracket match (the one that plays the
-    # winner of the previous losers-bracket bout).
-    if match.bracket is BracketSide.WINNERS:
-        # Winner stays in winners bracket.
-        next_match = _next_winner(matches, match_id)
-    else:
-        # Winner drops into the losers bracket.
-        # They face the next pending losers-bracket match.
-        next_match = _next_loser(matches, match_id)
+    if match.bracket is BracketSide.GRAND_FINAL:
+        return _advance_grand_final(index, match)
 
-    # --- determine where the loser drops ------------------------------------
-    # A losers-bracket loser is eliminated. A winners-bracket loser drops
-    # into the *corresponding* losers-bracket match.
-    if match.bracket is BracketSide.WINNERS:
-        # Loser of a winners-bracket match enters the losers bracket.
-        # The entry point is the losers-bracket match that plays the winner
-        # of the *previous* winners-bracket match at the same position.
-        # We find it by looking for a losers-bracket bout whose
-        # ``next_loser_match_id`` points to a match we already processed,
-        # or simply the first pending losers-bracket match at the same round.
-        next_match = _find_losers_entry(matches, match_id, "winner_drop")
-    else:
-        # Loser of a losers-bracket match = eliminated.
-        next_match = None
+    next_winner: Match | None = None
+    if match.next_winner_match_id is not None:
+        next_winner = _require(index, match.next_winner_match_id)
+        _offer(next_winner, winner_id, _slot_for(match, next_winner, is_loser=False))
 
-    return next_match, next_match  # placeholder; real logic below
+    next_loser: Match | None = None
+    if match.next_loser_match_id is not None:
+        next_loser = _require(index, match.next_loser_match_id)
+        _offer(
+            next_loser,
+            match.loser_id,
+            _slot_for(match, next_loser, is_loser=True),
+        )
 
-
-def _find_losers_entry(
-    matches: List[Match],
-    just_completed: str,
-    entry_kind: str,
-) -> Optional[Match]:
-    """Find the losers-bracket match a just-completed match feeds into.
-
-    This is the most complex piece of the double elimination logic because
-    there are two concurrent bracket paths (winners and losers) and the
-    mapping between them depends on the position *within the round*.
-
-    Parameters
-    ----------
-    matches:
-        All matches of the tournament.
-    just_completed:
-        The match that just finished.
-    entry_kind:
-        One of ``"winner_drop"`` (winners -> losers) or
-        ``"loser_eliminated"`` (losers -> eliminated).
-
-    Returns
-    -------
-    The next :class:`~core.models.Match` that should be started, or ``None``.
-    """
-
-    # Build a map: position within round -> list of matches at that round.
-    # We only care about matches of the same bracket side.
-    by_round: Dict[int, List[Match]] = defaultdict(list)
-    for m in matches:
-        if m.bracket is not BracketSide.WINNERS:  # only losers-bracket for now
-            continue
-        by_round[m.round].append(m)
-
-    # Determine the round and position of the match we just finished.
-    just = next(m for m in matches if m.id == just_completed)
-    target_round = just.round
-    target_pos = just.position
-
-    # The loser of a winners-bracket match at round ``r``, position ``p``
-    # drops into the losers-bracket match at the *same* round ``r``, but
-    # the losers-bracket position is derived from the winners-bracket position.
-    # In the canonical "3-6-5-7" losers-bracket layout (round 1: 3 matches,
-    # round 2: 3 matches, etc.) the mapping is:
-
-    #   winners pos p -> losers pos f(p)
-    # where f(0)=0, f(1)=2, f(2)=4, f(3)=6 ... (even numbers)
-
-    # However, a simpler heuristic works for most single-elimination-derived
-    # double brackets: the loser drops to the losers-bracket match whose
-    # ``next_loser_match_id`` currently points to ``None`` or to the just-
-    # completed match. We therefore look for any pending losers-bracket match
-    # whose ``next_loser_match_id`` is ``None`` (i.e. the final slot) or that
-    # already has its ``next_loser_match_id`` pointing elsewhere.
-
-    # Collect candidates:
-    candidates: List[Match] = []
-    for m in by_round.get(target_round, []):
-        # pending matches that need a loser opponent
-        if m.status is not MatchStatus.PENDING:
-            continue
-        # If this match's next_loser_match_id is None, it is the "last"
-        # slot and receives the new loser.
-        if m.next_loser_match_id is None:
-            candidates.append(m)
-        # Or if it already points to a match that is not yet completed,
-        # it may already be linked; we still consider it as a candidate.
-        elif any(m2.id == m.next_loser_match_id and m2.status is MatchStatus.PENDING for m2 in matches):
-            candidates.append(m)
-
-    if not candidates:
-        # Fallback: look for *any* pending losers-bracket match at the same
-        # round, regardless of its current next_loser_match_id.
-        for m in by_round.get(target_round, []):
-            if m.status is MatchStatus.PENDING and m not in candidates:
-                candidates.append(m)
-
-    if not candidates:
-        return None
-
-    # If we have exactly one candidate, return it.
-    if len(candidates) == 1:
-        return candidates[0]
-
-    # If there are several, pick the one whose ``next_loser_match_id`` is
-    # closest to being "the slot we just freed". A pragmatic choice is the
-    # first one that has not been assigned a loser yet (its
-    # ``next_loser_match_id`` is None).
-    for c in candidates:
-        if c.next_loser_match_id is None:
-            return c
-
-    # Last resort: return the first candidate.
-    return candidates[0]
-
-
-def is_tournament_over(matches: List[Match], players: List[Player]) -> bool:
-    """Return ``True`` when the tournament has a single remaining player.
-
-    The function counts active players (those whose ``status`` is not
-    ``ELIMINATED`` and ``WITHDRAWN``). If exactly one player remains,
-    the tournament is over.
-
-    Parameters
-    ----------
-    matches:
-        Current matches (unused in this simple check, but kept for future
-        extensions where we might verify that the final match is completed).
-    players:
-        All registered players.
-
-    Returns
-    -------
-    ``True`` when only one player is still mathematically able to win.
-    """
-
-    active = {
-        p.id
-        for p in players
-        if p.status not in (PlayerStatus.ELIMINATED, PlayerStatus.WITHDRAWN)
-    }
-    return len(active) <= 1
+    return next_winner, next_loser
 
 
 def find_next_match(
-    matches: List[Match],
+    matches: Iterable[Match],
     player_id: str,
     *,
-    side: Optional[BracketSide] = None,
-) -> Optional[Match]:
-    """Return the next pending match that involves ``player_id``.
+    side: BracketSide | None = None,
+) -> Match | None:
+    """Return the next playable match that involves ``player_id``.
 
-    Parameters
-    ----------
-    matches:
-        All matches of the tournament.
-    player_id:
-        Player to look for.
-    side:
-        If ``None``, search both ``BracketSide.WINNERS`` and
-        ``BracketSide.LOSERS``. If provided, only search that side.
+    Matches are ordered by bracket (winners before losers before grand final)
+    and then by round and position.
 
-    Returns
-    -------
-    The next pending match, or ``None`` if the player has no upcoming bout.
+    Args:
+        matches: Every match of the tournament.
+        player_id: Player to look for.
+        side: Restrict the search to one bracket side when provided.
+
+    Returns:
+        The first ``PENDING`` or ``READY`` match containing the player, or
+        ``None`` when the player has no upcoming bout.
     """
 
-    for m in matches:
-        if m.status is not MatchStatus.PENDING and m.status is not MatchStatus.READY:
-            continue
-        if side is not None and m.bracket is not side:
-            continue
-        if m.player1_id == player_id or m.player2_id == player_id:
-            return m
-    return None
+    order = {
+        BracketSide.WINNERS: 0,
+        BracketSide.LOSERS: 1,
+        BracketSide.GRAND_FINAL: 2,
+    }
+
+    candidates = [
+        match
+        for match in matches
+        if match.status in _OPEN_STATUSES
+        and (side is None or match.bracket is side)
+        and player_id in (match.player1_id, match.player2_id)
+    ]
+    if not candidates:
+        return None
+
+    return min(
+        candidates,
+        key=lambda match: (order[match.bracket], match.round, match.position),
+    )
+
+
+def is_tournament_over(
+    matches: Iterable[Match],
+    players: Sequence[Player],
+) -> bool:
+    """Return ``True`` when at most one player can still win the title.
+
+    Players that are eliminated or withdrawn no longer count. ``matches`` is
+    accepted for API symmetry and for future rules that also require the final
+    match to be completed.
+    """
+
+    del matches  # reserved for future rules
+    active = [
+        player
+        for player in players
+        if player.status
+        not in (PlayerStatus.ELIMINATED, PlayerStatus.WITHDRAWN)
+    ]
+    return len(active) <= 1
 
 
 def make_grand_final(
-    matches: List[Match],
+    matches: list[Match],
     system_id: str,
-    winner_wb_id: str,  # winners-bracket champion
-    player_lb_id: str,  # losers-bracket runner-up (may be None)
-) -> Tuple[Optional[Match], Optional[Match]]:
-    """Build the two grand-final matches when the tournament is ready.
+    winner_wb_id: str,
+    player_lb_id: str | None,
+) -> tuple[Match, Match | None]:
+    """Ensure the grand-final slots exist and seed them.
 
-    In a standard double-elimination final:
+    Args:
+        matches: Every match of the tournament (modified in place).
+        system_id: Identifier of the owning gaming system.
+        winner_wb_id: Winners-bracket champion.
+        player_lb_id: Losers-bracket champion, or ``None`` when the losers
+            bracket produced nobody.
 
-    1. If the winners-bracket winner (``winner_wb_id``) loses the first
-       final match, the tournament is over (WB winner is champion).
-    2. If the WB winner wins *and* the LB runner-up (``player_lb_id``) also
-       wins, a second final match is required (if‑necessary format).
-
-    This function returns the two matches that must be started:
-
-    - ``match1``: first grand-final bout (WB winner vs LB runner-up).
-    - ``match2``: if ``player_lb_id`` is ``None``, ``None``; otherwise the
-      potential second final match (id ``None`` signals "best-of-three"
-      or "winner-decides" logic is left to the admin).
-
-    Parameters
-    ----------
-    matches:
-        All matches of the tournament (used to find/create the final slots).
-    system_id:
-        Identifier of the gaming system.
-    winner_wb_id:
-        Player who came from the winners bracket.
-    player_lb_id:
-        Player who came from the losers bracket (may be ``None`` if the LB
-        was empty, which happens when the WB winner sweeps).
-
-    Returns
-    -------
-    ``(match1, match2)`` where each is a :class:`~core.models.Match` object
-    in ``READY`` status, or ``None`` when no such match is required.
+    Returns:
+        ``(first_final, reset_final)``. ``reset_final`` is ``None`` when no
+        losers-bracket player is available, because the title is already
+        decided.
     """
 
-    # --- create match1: WB winner vs LB runner-up ---------------------------
-    # Locate or create the first grand-final match.
-    match1 = next(
-        (m for m in matches if m.bracket is BracketSide.GRAND_FINAL and m.round == 1 and m.position == 0 and m.status is MatchStatus.PENDING),
+    index = _index(matches)
+
+    first = next(
+        (
+            match
+            for match in matches
+            if match.bracket is BracketSide.GRAND_FINAL and match.round == 1
+        ),
         None,
     )
+    if first is None:
+        first = Match(
+            system_id=system_id,
+            bracket=BracketSide.GRAND_FINAL,
+            round=1,
+            position=0,
+        )
+        matches.append(first)
 
-    if match1 is None:
-        # Build a new match slot.
-        # Find the highest-round/position gap in GRAND_FINAL.
-        existing = [
-            m for m in matches
-            if m.bracket is BracketSide.GRAND_FINAL and m.status is not MatchStatus.COMPLETED
-        ]
-        if not existing:
-            # No grand-final slots exist yet – create one.
-            # We use round=1, position=0 as the convention.
-            # The match must have exactly two players.
-            # We'll assign them later when the admin starts the match.
-            match1 = Match(
-                id=Match.model_construct().id,
-                system_id=system_id,
-                bracket=BracketSide.GRAND_FINAL,
-                round=1,
-                position=0,
-                status=MatchStatus.PENDING,
-                is_bye=False,
-            )
-            matches.append(match1)
-        else:
-            match1 = existing[0]
+    if player_lb_id is None:
+        first.assign_players(winner_wb_id, None)
+        first.is_bye = True
+        return first, None
 
-    # Assign players.
-    # The WB winner is always player1; the LB runner-up is player2.
-    # If the LB runner-up is None (sweep), we still create the match but
-    # mark it as a "bye" for the LB side so the admin knows the WB winner
-    # is champion automatically.
-    if player_lb_id is not None:
-        match1.assign_players(winner_wb_id, player_lb_id)
-    else:
-        # Bye: only one real player; the other slot is a placeholder.
-        match1.assign_players(winner_wb_id, None)
-        match1.is_bye = True
+    first.assign_players(winner_wb_id, player_lb_id)
 
-    # Set match1 as READY.
-    if match1.status is not MatchStatus.READY:
-        match1.start()  # this sets started_at and status to ACTIVE; we'll revert
-        # Instead just set status manually:
-        match1.status = MatchStatus.READY
+    reset = next(
+        (
+            match
+            for match in matches
+            if match.bracket is BracketSide.GRAND_FINAL and match.round == 2
+        ),
+        None,
+    )
+    if reset is None:
+        reset = Match(
+            system_id=system_id,
+            bracket=BracketSide.GRAND_FINAL,
+            round=2,
+            position=0,
+        )
+        matches.append(reset)
+        first.next_winner_match_id = reset.id
 
-    # --- create match2 (if necessary) --------------------------------------
-    match2: Optional[Match] = None
-    if player_lb_id is not None:
-        # Look for an existing second-grand-final slot.
-        match2_candidates = [
-            m
-            for m in matches
-            if m.bracket is BracketSide.GRAND_FINAL
-            and m.round == 2
-            and m.position == 0
-            and m.status is MatchStatus.PENDING
-        ]
-        if match2_candidates:
-            match2 = match2_candidates[0]
-        else:
-            match2 = Match(
-                id=Match.model_construct().id,
-                system_id=system_id,
-                bracket=BracketSide.GRAND_FINAL,
-                round=2,
-                position=0,
-                status=MatchStatus.PENDING,
-                is_bye=False,
-            )
-            matches.append(match2)
-
-        # Assign players for match2: the winner of match1 (which will be
-        # the WB winner if they won, or the LB runner-up if they forced a
-        # second game) faces the other. Since we do not know the result of
-        # match1 ahead of time, we leave the slots unassigned and let the
-        # admin call ``complete()`` with the appropriate winner. We simply
-        # mark the match READY so the admin can start it.
-        match2.assign_players(None, None)  # placeholders
-        match2.status = MatchStatus.READY
-    else:
-        # No second match needed – WB winner is champion.
-        match2 = None
-
-    return match1, match2
+    return first, reset
