@@ -19,6 +19,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from aiogram import Bot, Dispatcher
+from aiogram.types import MenuButtonWebApp, WebAppInfo
 
 from core.storage import DEFAULT_DATA_DIR, StorageManager
 
@@ -36,7 +37,23 @@ async def run(settings: BotSettings) -> None:
 
     bot = Bot(settings.token)
     dispatcher = Dispatcher()
-    dispatcher.include_router(build_router(storage))
+    dispatcher.include_router(
+        build_router(storage, webapp_url=settings.webapp_url)
+    )
+
+    if settings.webapp_url:
+        try:
+            await bot.set_chat_menu_button(
+                menu_button=MenuButtonWebApp(
+                    text="🏆 Live bracket",
+                    web_app=WebAppInfo(url=settings.webapp_url),
+                )
+            )
+        except Exception:  # noqa: BLE001 - a menu button is a nice-to-have
+            LOGGER.warning(
+                "Could not install the mini-app menu button; /app still works.",
+                exc_info=True,
+            )
 
     LOGGER.info("Bot started; data directory is %s", settings.data_dir)
     try:
@@ -78,7 +95,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.data_dir:
         settings = BotSettings(
-            token=settings.token, data_dir=Path(args.data_dir)
+            token=settings.token,
+            data_dir=Path(args.data_dir),
+            webapp_url=settings.webapp_url,
         )
 
     try:

@@ -10,8 +10,15 @@ from unittest.mock import patch
 
 from aiogram import Router
 
-from bot.config import BOT_TOKEN_ENV, DATA_DIR_ENV, BotSettings, ConfigError
+from bot.config import (
+    BOT_TOKEN_ENV,
+    DATA_DIR_ENV,
+    WEBAPP_URL_ENV,
+    BotSettings,
+    ConfigError,
+)
 from bot.handlers import WELCOME_TEXT, build_router
+from bot.keyboards import webapp_keyboard
 from bot.notifications import notify_ready_matches, ready_match_text
 from bot.service import (
     format_bracket,
@@ -191,6 +198,24 @@ class HandlerWiringTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsInstance(router, Router)
             self.assertEqual(router.name, "tourneycore")
 
+    async def test_build_router_accepts_a_webapp_url(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = StorageManager(data_dir=Path(tmp))
+            await storage.initialize()
+            router = build_router(storage, webapp_url="https://example.com/")
+            self.assertIsInstance(router, Router)
+
+    def test_webapp_keyboard_opens_the_url(self) -> None:
+        markup = webapp_keyboard("https://example.com/live")
+
+        self.assertEqual(len(markup.inline_keyboard), 1)
+        button = markup.inline_keyboard[0][0]
+        self.assertEqual(button.web_app.url, "https://example.com/live")
+        self.assertIn("bracket", button.text.lower())
+
+    def test_welcome_text_lists_the_app_command(self) -> None:
+        self.assertIn("/app", WELCOME_TEXT)
+
     def test_welcome_text_lists_registration(self) -> None:
         self.assertIn("/register", WELCOME_TEXT)
 
@@ -207,6 +232,25 @@ class ConfigTests(unittest.TestCase):
             settings = BotSettings.from_env()
         self.assertEqual(settings.token, "token-123")
         self.assertEqual(str(settings.data_dir), r"C:\data")
+        self.assertIsNone(settings.webapp_url)
+
+    def test_reads_the_mini_app_url(self) -> None:
+        env = {
+            BOT_TOKEN_ENV: "token-123",
+            WEBAPP_URL_ENV: "https://tourney.example.com/",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            settings = BotSettings.from_env()
+        self.assertEqual(settings.webapp_url, "https://tourney.example.com/")
+
+    def test_rejects_an_insecure_mini_app_url(self) -> None:
+        env = {
+            BOT_TOKEN_ENV: "token-123",
+            WEBAPP_URL_ENV: "http://tourney.example.com/",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            with self.assertRaises(ConfigError):
+                BotSettings.from_env()
 
 
 if __name__ == "__main__":
