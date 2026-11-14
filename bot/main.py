@@ -19,6 +19,8 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from aiogram import Bot, Dispatcher
+from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.client.telegram import TelegramAPIServer
 from aiogram.types import MenuButtonWebApp, WebAppInfo
 
 from core.storage import DEFAULT_DATA_DIR, StorageManager
@@ -35,7 +37,12 @@ async def run(settings: BotSettings) -> None:
     storage = StorageManager(data_dir=settings.data_dir)
     await storage.initialize()
 
-    bot = Bot(settings.token)
+    # اعمال پراکسی کلودفلر برای اتصال به تلگرام (رفع فیلترینگ)
+    custom_session = AiohttpSession(
+        api=TelegramAPIServer.from_base("https://tg-proxy.amir-h-porsharifi.workers.dev")
+    )
+
+    bot = Bot(token=settings.token, session=custom_session)
     dispatcher = Dispatcher()
     dispatcher.include_router(
         build_router(storage, webapp_url=settings.webapp_url)
