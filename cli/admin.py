@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sys
 from collections.abc import Awaitable, Callable, Sequence
 
@@ -288,12 +289,17 @@ async def _record_result(
     method: WinMethod,
     score_player1: int | None,
     score_player2: int | None,
+    notify: bool = False,
 ) -> int:
     """Shared implementation of ``win`` and ``walkover``."""
 
     match = await storage.require_match(match_id)
     players = await storage.list_players(match.system_id)
     matches = await storage.list_matches(match.system_id)
+
+    ready_before = {
+        item.id for item in matches if item.status is MatchStatus.READY
+    }
 
     # ``advance_match`` mutates the instance stored in ``matches``. Resolve it
     # here so the version written back to disk is the updated one, not the
@@ -350,7 +356,42 @@ async def _record_result(
             if target is not None:
                 print(f"{label}: {target.id} [{target.status.value}]")
 
+    if notify:
+        newly_ready = [
+            item
+            for item in matches
+            if item.status is MatchStatus.READY and item.id not in ready_before
+        ]
+        await _notify_players(newly_ready, players)
+
     return 0
+
+
+async def _notify_players(matches: Sequence[Match], players: Sequence[Player]) -> None:
+    """Send Telegram notifications for matches that just became ready."""
+
+    if not matches:
+        return
+
+    token = os.environ.get("TOURNEYCORE_BOT_TOKEN", "").strip()
+    if not token:
+        print(
+            "Warning: --notify was given but TOURNEYCORE_BOT_TOKEN is not set.",
+            file=sys.stderr,
+        )
+        return
+
+    # Imported lazily so the CLI works for admins who never use the bot.
+    from aiogram import Bot
+
+    from bot.notifications import notify_ready_matches
+
+    bot = Bot(token)
+    try:
+        sent = await notify_ready_matches(bot, matches, players)
+    finally:
+        await bot.session.close()
+    print(f"Sent {sent} Telegram notification(s).")
 
 
 async def cmd_win(args: argparse.Namespace, storage: StorageManager) -> int:
@@ -363,6 +404,7 @@ async def cmd_win(args: argparse.Namespace, storage: StorageManager) -> int:
         WinMethod.NORMAL,
         args.score1,
         args.score2,
+        notify=args.notify,
     )
 
 
@@ -376,6 +418,7 @@ async def cmd_walkover(args: argparse.Namespace, storage: StorageManager) -> int
         WinMethod.WALKOVER,
         None,
         None,
+        notify=args.notify,
     )
 
 
@@ -468,11 +511,21 @@ def build_parser() -> argparse.ArgumentParser:
     win_parser.add_argument("player_id")
     win_parser.add_argument("--score1", type=int, default=None)
     win_parser.add_argument("--score2", type=int, default=None)
+    win_parser.add_argument(
+        "--notify",
+        action="store_true",
+        help="Send Telegram messages to players whose next match became ready.",
+    )
     win_parser.set_defaults(handler=cmd_win)
 
     walkover_parser = subparsers.add_parser("walkover", help="Record a walkover.")
     walkover_parser.add_argument("match_id")
     walkover_parser.add_argument("player_id")
+    walkover_parser.add_argument(
+        "--notify",
+        action="store_true",
+        help="Send Telegram messages to players whose next match became ready.",
+    )
     walkover_parser.set_defaults(handler=cmd_walkover)
 
     return parser

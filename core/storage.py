@@ -558,6 +558,14 @@ class StorageManager:
                 return player
         return None
 
+    async def find_player_by_telegram_id(self, telegram_id: int) -> Player | None:
+        """Return the player linked to a Telegram account, if any."""
+
+        for player in await self._players.read_all():
+            if player.telegram_id == telegram_id:
+                return player
+        return None
+
     async def create_player(
         self,
         system_id: str,
