@@ -24,10 +24,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import logging
 import threading
+import time
 from collections.abc import Coroutine, Sequence
+from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -79,6 +82,31 @@ SECURITY_HEADERS: dict[str, str] = {
     "X-Content-Type-Options": "nosniff",
 }
 
+#: JSON documents whose changes drive the live update stream.
+STREAMED_FILES = ("systems.json", "users.json", "matches.json")
+
+#: Seconds between change checks and between keep-alive comments.
+STREAM_POLL_SECONDS = 1.0
+STREAM_HEARTBEAT_SECONDS = 15.0
+
+
+def snapshot_revision(data_dir: Path) -> str:
+    """Return a short fingerprint of the tournament documents.
+
+    Only file metadata is hashed, so the check is cheap and never parses the
+    database. A different revision means the frontend should refetch.
+    """
+
+    digest = hashlib.sha256()
+    for name in STREAMED_FILES:
+        try:
+            stat = (data_dir / name).stat()
+        except OSError:
+            digest.update(f"{name}:missing".encode("utf-8"))
+            continue
+        digest.update(f"{name}:{stat.st_mtime_ns}:{stat.st_size}".encode("utf-8"))
+    return digest.hexdigest()[:16]
+
 
 class _LoopRunner:
     """Run storage coroutines on one dedicated event loop.
@@ -119,7 +147,7 @@ class TourneyCoreHandler(BaseHTTPRequestHandler):
     """Serve the JSON API and the static mini-app."""
 
     protocol_version = "HTTP/1.1"
-    server_version = "TourneyCore/0.7"
+    server_version = "TourneyCore/0.8"
 
     storage: StorageManager
     runner: _LoopRunner
@@ -131,6 +159,9 @@ class TourneyCoreHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 - name required by http.server
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
+        if path in ("/api/stream", "/api/stream/"):
+            self._serve_stream()
+            return
         if path == "/api" or path.startswith("/api/"):
             self._handle_api(path)
             return
@@ -207,6 +238,62 @@ class TourneyCoreHandler(BaseHTTPRequestHandler):
             "error": "not_found",
             "detail": f"Unknown endpoint {path!r}.",
         }
+
+    # ------------------------------------------------------------------
+    # Live updates (Server-Sent Events)
+    # ------------------------------------------------------------------
+    def _serve_stream(self) -> None:
+        """Push an ``update`` event whenever the database changes."""
+
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("X-Accel-Buffering", "no")
+        self._send_security_headers()
+        self.end_headers()
+
+        # SSE responses carry no Content-Length: the connection stays open and
+        # ends when the client goes away or the server stops.
+        self.close_connection = True
+
+        data_dir = self.storage.data_dir
+        revision: str | None = None
+        last_heartbeat = time.monotonic()
+
+        try:
+            while not self.server.stop_event.is_set():
+                current = snapshot_revision(data_dir)
+                if current != revision:
+                    revision = current
+                    self._write_sse(
+                        "update",
+                        {
+                            "revision": revision,
+                            "generated_at": datetime.now(timezone.utc).isoformat(),
+                        },
+                    )
+                    last_heartbeat = time.monotonic()
+                elif (
+                    time.monotonic() - last_heartbeat
+                    >= STREAM_HEARTBEAT_SECONDS
+                ):
+                    self._write_sse("ping", {"revision": revision})
+                    last_heartbeat = time.monotonic()
+                self.server.stop_event.wait(STREAM_POLL_SECONDS)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            # The browser closed the tab; nothing left to do.
+            return
+
+    def _write_sse(self, event: str, payload: dict[str, Any]) -> None:
+        """Write one SSE frame and flush it immediately."""
+
+        frame = (
+            f"event: {event}\n"
+            f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+        ).encode("utf-8")
+        self.wfile.write(frame)
+        self.wfile.flush()
 
     # ------------------------------------------------------------------
     # Static files
@@ -321,10 +408,12 @@ class TourneyCoreHTTPServer(ThreadingHTTPServer):
     ) -> None:
         super().__init__(address, handler)
         self.runner = runner
+        self.stop_event = threading.Event()
 
     def server_close(self) -> None:
-        """Close the socket and stop the storage loop."""
+        """Close the socket, stop open streams and the storage loop."""
 
+        self.stop_event.set()
         super().server_close()
         self.runner.close()
 
