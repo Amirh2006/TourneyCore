@@ -111,7 +111,7 @@ class CliFlowTests(unittest.TestCase):
         system = self.read_json("systems.json")[0]
         self.assertEqual(system["status"], "completed")
 
-    def test_seed_requires_power_of_two(self) -> None:
+    def test_seed_odd_roster_uses_a_bye(self) -> None:
         self.assertEqual(self.run_cli("init", "Odd Cup", "--max-players", "5"), 0)
         system_id = self.read_json("systems.json")[0]["id"]
         for name in ("A", "B", "C"):
@@ -123,7 +123,28 @@ class CliFlowTests(unittest.TestCase):
                 ),
                 0,
             )
-        self.assertEqual(self.run_cli("seed", system_id), 1)
+        self.assertEqual(self.run_cli("seed", system_id), 0)
+
+        matches = self.read_json("matches.json")
+        byes = [match for match in matches if match.get("is_bye")]
+        self.assertEqual(len(byes), 1)
+        self.assertEqual(byes[0]["status"], "completed")
+
+    def test_odd_tournament_can_finish(self) -> None:
+        self.assertEqual(self.run_cli("init", "Three Cup", "--max-players", "3"), 0)
+        system_id = self.read_json("systems.json")[0]["id"]
+        for name in ("Alice", "Bob", "Carol"):
+            self.assertEqual(self.run_cli("add-player", system_id, name), 0)
+        for index, player in enumerate(self.read_json("users.json")):
+            self.assertEqual(
+                self.run_cli(
+                    "register", player["entry_code"], "--telegram-id", str(700 + index)
+                ),
+                0,
+            )
+        self.assertEqual(self.run_cli("seed", system_id), 0)
+        self.play_until_done(reset=False)
+        self.assertEqual(self.read_json("systems.json")[0]["status"], "completed")
 
     def test_win_with_outsider_is_rejected(self) -> None:
         self.seed_four_players()

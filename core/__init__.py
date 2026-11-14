@@ -15,6 +15,7 @@ from core.bracket import (
     advance_match,
     build_bracket,
     find_next_match,
+    is_match_dead,
     is_tournament_over,
     make_grand_final,
 )
@@ -61,6 +62,7 @@ __all__ = [
     "build_bracket",
     "find_next_match",
     "generate_entry_code",
+    "is_match_dead",
     "is_tournament_over",
     "make_grand_final",
 ]

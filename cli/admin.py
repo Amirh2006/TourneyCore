@@ -24,12 +24,14 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sys
 from collections.abc import Awaitable, Callable, Sequence
 
 from core.bracket import (
     advance_match,
     build_bracket,
+    is_match_dead,
     is_tournament_over,
 )
 from core.models import (
@@ -68,7 +70,10 @@ def _match_line(match: Match, players: Sequence[Player]) -> str:
 
     left = _player_name(players, match.player1_id)
     right = _player_name(players, match.player2_id)
-    if match.status is MatchStatus.COMPLETED and match.winner_id is not None:
+    if match.status is MatchStatus.COMPLETED and match.is_bye:
+        winner = _player_name(players, match.winner_id)
+        result = f"bye -> {winner}"
+    elif match.status is MatchStatus.COMPLETED and match.winner_id is not None:
         winner = _player_name(players, match.winner_id)
         score = ""
         if match.score_player1 is not None or match.score_player2 is not None:
@@ -85,7 +90,13 @@ def _match_line(match: Match, players: Sequence[Player]) -> str:
 
 
 def _print_matches(matches: Sequence[Match], players: Sequence[Player]) -> None:
-    """Print matches grouped by bracket side."""
+    """Print matches grouped by bracket side, hiding unreachable ones."""
+
+    visible = [
+        match
+        for match in matches
+        if not (match.status is MatchStatus.PENDING and is_match_dead(matches, match))
+    ]
 
     groups = (
         (BracketSide.WINNERS, "Winners bracket"),
@@ -93,7 +104,7 @@ def _print_matches(matches: Sequence[Match], players: Sequence[Player]) -> None:
         (BracketSide.GRAND_FINAL, "Grand final"),
     )
     for side, title in groups:
-        group = [match for match in matches if match.bracket is side]
+        group = [match for match in visible if match.bracket is side]
         if not group:
             continue
         print(f"{title}:")
@@ -278,12 +289,17 @@ async def _record_result(
     method: WinMethod,
     score_player1: int | None,
     score_player2: int | None,
+    notify: bool = False,
 ) -> int:
     """Shared implementation of ``win`` and ``walkover``."""
 
     match = await storage.require_match(match_id)
     players = await storage.list_players(match.system_id)
     matches = await storage.list_matches(match.system_id)
+
+    ready_before = {
+        item.id for item in matches if item.status is MatchStatus.READY
+    }
 
     # ``advance_match`` mutates the instance stored in ``matches``. Resolve it
     # here so the version written back to disk is the updated one, not the
@@ -307,13 +323,15 @@ async def _record_result(
         print(f"Cannot record result: {error}", file=sys.stderr)
         return 1
 
-    # Persist every match the engine touched.
-    touched = [target]
-    for candidate in (next_winner, next_loser):
-        if candidate is not None and candidate not in touched:
-            touched.append(candidate)
-    for stored in touched:
-        await storage.save_match(stored)
+    # Persist the whole bracket of this system. A bye cascade can complete
+    # intermediate matches that are not returned by ``advance_match``, so
+    # saving only the direct targets would drop those updates.
+    other_systems = [
+        item
+        for item in await storage.list_matches()
+        if item.system_id != match.system_id
+    ]
+    await storage.save_matches([*other_systems, *matches])
 
     for player in players:
         await storage.save_player(player)
@@ -328,11 +346,52 @@ async def _record_result(
         await storage.save_system(system)
         print(f"Tournament {system.id} is complete.")
 
-    for label, target in (("Next winners match", next_winner), ("Next losers match", next_loser)):
-        if target is not None:
-            print(f"{label}: {target.id} [{target.status.value}]")
+    if next_winner is not None and next_winner is next_loser:
+        print(f"Next match: {next_winner.id} [{next_winner.status.value}]")
+    else:
+        for label, target in (
+            ("Next winners match", next_winner),
+            ("Next losers match", next_loser),
+        ):
+            if target is not None:
+                print(f"{label}: {target.id} [{target.status.value}]")
+
+    if notify:
+        newly_ready = [
+            item
+            for item in matches
+            if item.status is MatchStatus.READY and item.id not in ready_before
+        ]
+        await _notify_players(newly_ready, players)
 
     return 0
+
+
+async def _notify_players(matches: Sequence[Match], players: Sequence[Player]) -> None:
+    """Send Telegram notifications for matches that just became ready."""
+
+    if not matches:
+        return
+
+    token = os.environ.get("TOURNEYCORE_BOT_TOKEN", "").strip()
+    if not token:
+        print(
+            "Warning: --notify was given but TOURNEYCORE_BOT_TOKEN is not set.",
+            file=sys.stderr,
+        )
+        return
+
+    # Imported lazily so the CLI works for admins who never use the bot.
+    from aiogram import Bot
+
+    from bot.notifications import notify_ready_matches
+
+    bot = Bot(token)
+    try:
+        sent = await notify_ready_matches(bot, matches, players)
+    finally:
+        await bot.session.close()
+    print(f"Sent {sent} Telegram notification(s).")
 
 
 async def cmd_win(args: argparse.Namespace, storage: StorageManager) -> int:
@@ -345,6 +404,7 @@ async def cmd_win(args: argparse.Namespace, storage: StorageManager) -> int:
         WinMethod.NORMAL,
         args.score1,
         args.score2,
+        notify=args.notify,
     )
 
 
@@ -358,6 +418,7 @@ async def cmd_walkover(args: argparse.Namespace, storage: StorageManager) -> int
         WinMethod.WALKOVER,
         None,
         None,
+        notify=args.notify,
     )
 
 
@@ -450,11 +511,21 @@ def build_parser() -> argparse.ArgumentParser:
     win_parser.add_argument("player_id")
     win_parser.add_argument("--score1", type=int, default=None)
     win_parser.add_argument("--score2", type=int, default=None)
+    win_parser.add_argument(
+        "--notify",
+        action="store_true",
+        help="Send Telegram messages to players whose next match became ready.",
+    )
     win_parser.set_defaults(handler=cmd_win)
 
     walkover_parser = subparsers.add_parser("walkover", help="Record a walkover.")
     walkover_parser.add_argument("match_id")
     walkover_parser.add_argument("player_id")
+    walkover_parser.add_argument(
+        "--notify",
+        action="store_true",
+        help="Send Telegram messages to players whose next match became ready.",
+    )
     walkover_parser.set_defaults(handler=cmd_walkover)
 
     return parser
