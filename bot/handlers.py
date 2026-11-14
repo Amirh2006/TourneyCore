@@ -8,6 +8,7 @@ from aiogram.types import Message
 
 from core.storage import StorageError, StorageManager
 
+from bot.keyboards import webapp_keyboard
 from bot.service import (
     format_bracket,
     format_next_match,
@@ -27,19 +28,30 @@ WELCOME_TEXT = (
     "/next — your next match\n"
     "/bracket — the full tournament bracket\n"
     "/standings — current standings\n"
+    "/app — open the live bracket mini-app\n"
     "/help — show this message\n\n"
     "You can also send your 8-character entry code directly."
 )
 
 
-def build_router(storage: StorageManager) -> Router:
+def build_router(storage: StorageManager, webapp_url: str | None = None) -> Router:
     """Create a router whose handlers use ``storage``.
 
     A fresh router is returned on every call so tests can build isolated
     dispatchers without sharing middleware or handler state.
+
+    Args:
+        storage: Storage manager backing every handler.
+        webapp_url: Optional HTTPS address of the live mini-app. When it is
+            set, ``/start`` and ``/app`` show a Web App button.
     """
 
     router = Router(name="tourneycore")
+
+    def app_markup():
+        """Return the mini-app keyboard, or ``None`` when unconfigured."""
+
+        return webapp_keyboard(webapp_url) if webapp_url else None
 
     async def require_player(message: Message, telegram_id: int):
         """Return the sender's player record, or answer and return ``None``."""
@@ -56,14 +68,27 @@ def build_router(storage: StorageManager) -> Router:
     @router.message(Command("start"))
     async def handle_start(message: Message) -> None:
         player = await load_player(storage, message.from_user.id)
-        if player is None:
-            await message.answer(WELCOME_TEXT)
-        else:
-            await message.answer(f"Welcome back, {player.name}!\n\n{WELCOME_TEXT}")
+        text = WELCOME_TEXT
+        if player is not None:
+            text = f"Welcome back, {player.name}!\n\n{WELCOME_TEXT}"
+        await message.answer(text, reply_markup=app_markup())
 
     @router.message(Command("help"))
     async def handle_help(message: Message) -> None:
         await message.answer(WELCOME_TEXT)
+
+    @router.message(Command("app"))
+    async def handle_app(message: Message) -> None:
+        if not webapp_url:
+            await message.answer(
+                "The live bracket mini-app is not configured yet. Ask the "
+                "organizer to set TOURNEYCORE_WEBAPP_URL."
+            )
+            return
+        await message.answer(
+            "📺 The bracket updates live while you watch.",
+            reply_markup=webapp_keyboard(webapp_url),
+        )
 
     async def do_register(message: Message, code: str) -> None:
         if not code:

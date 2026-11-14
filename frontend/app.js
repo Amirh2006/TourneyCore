@@ -257,6 +257,28 @@
     }, state.refreshMs);
   }
 
+  function connectStream() {
+    if (!("EventSource" in window)) return;
+
+    let stream;
+    try {
+      stream = new EventSource("/api/stream");
+    } catch {
+      return;
+    }
+
+    // Coalesce bursts of changes (one CLI command rewrites several files).
+    let pending = null;
+    stream.addEventListener("update", () => {
+      if (pending) return;
+      pending = window.setTimeout(() => {
+        pending = null;
+        if (!document.hidden) loadDashboard({ silent: true });
+      }, 300);
+    });
+    // EventSource reconnects on its own; the interval stays as a fallback.
+  }
+
   /* ------------------------------------------------------------------ */
   /* Rendering                                                           */
   /* ------------------------------------------------------------------ */
@@ -507,6 +529,7 @@
     configureRefresh();
     await loadSystems();
     scheduleRefresh();
+    connectStream();
   }
 
   bootstrap();

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -15,7 +17,7 @@ from core.models import GamingSystem, MatchStatus, Player, SystemStatus
 from core.storage import RecordNotFoundError, StorageManager
 
 from web.api import build_dashboard, build_system_list
-from web.server import create_server
+from web.server import create_server, snapshot_revision
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
@@ -342,6 +344,129 @@ class ServerTests(StorageTestCase):
         self.assertEqual(status, 200)
         self.assertEqual(body, b"")
         self.assertGreater(int(headers.get("Content-Length")), 0)
+
+
+# ---------------------------------------------------------------------------
+# Live updates (Server-Sent Events)
+# ---------------------------------------------------------------------------
+class StreamTests(StorageTestCase):
+    """Exercise the change-detection stream against a running tournament."""
+
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        self.system = await create_tournament(
+            self.storage, ["Alice", "Bob", "Carol", "Dave"]
+        )
+        self.server = create_server(
+            self.storage,
+            host="127.0.0.1",
+            port=0,
+            frontend_dir=FRONTEND_DIR,
+        )
+        self.thread = threading.Thread(
+            target=lambda: self.server.serve_forever(poll_interval=0.05),
+            daemon=True,
+        )
+        self.thread.start()
+        host, port = self.server.server_address[:2]
+        self.base = f"http://{host}:{port}"
+
+    async def asyncTearDown(self) -> None:
+        self.server.shutdown()
+        self.thread.join(timeout=5)
+        self.server.server_close()
+        await super().asyncTearDown()
+
+    @staticmethod
+    def read_event(response):
+        """Read one complete SSE frame and return its lines."""
+
+        lines = []
+        while True:
+            raw = response.readline()
+            if not raw:
+                raise AssertionError("SSE stream closed unexpectedly.")
+            line = raw.decode("utf-8").rstrip("\r\n")
+            if line == "":
+                return lines
+            lines.append(line)
+
+    @staticmethod
+    def event_name(lines):
+        for line in lines:
+            if line.startswith("event:"):
+                return line.split(":", 1)[1].strip()
+        return None
+
+    @staticmethod
+    def event_payload(lines):
+        for line in lines:
+            if line.startswith("data:"):
+                return json.loads(line.split(":", 1)[1].strip())
+        return {}
+
+    async def record_one_result(self) -> None:
+        """Record a single READY match so the database revision changes."""
+
+        players = await self.storage.list_players(self.system.id)
+        matches = await self.storage.list_matches(self.system.id)
+        match = next(
+            item for item in matches if item.status is MatchStatus.READY
+        )
+        advance_match(matches, match.id, match.player1_id, players=players)
+        await self.storage.save_matches(matches)
+        for player in players:
+            await self.storage.save_player(player)
+
+    async def test_stream_sends_initial_update(self) -> None:
+        response = urllib.request.urlopen(
+            self.base + "/api/stream", timeout=10
+        )
+        try:
+            self.assertIn(
+                "text/event-stream", response.headers.get("Content-Type")
+            )
+            lines = await asyncio.to_thread(self.read_event, response)
+            self.assertEqual(self.event_name(lines), "update")
+            self.assertTrue(self.event_payload(lines)["revision"])
+        finally:
+            response.close()
+
+    async def test_stream_reports_a_new_result(self) -> None:
+        response = urllib.request.urlopen(
+            self.base + "/api/stream", timeout=10
+        )
+        try:
+            first = self.event_payload(
+                await asyncio.to_thread(self.read_event, response)
+            )
+            await self.record_one_result()
+
+            deadline = time.monotonic() + 8
+            changed = None
+            while time.monotonic() < deadline:
+                lines = await asyncio.to_thread(self.read_event, response)
+                if self.event_name(lines) != "update":
+                    continue
+                payload = self.event_payload(lines)
+                if payload.get("revision") != first.get("revision"):
+                    changed = payload
+                    break
+
+            self.assertIsNotNone(
+                changed, "no update event was pushed after a result"
+            )
+        finally:
+            response.close()
+
+
+class RevisionTests(StorageTestCase):
+    async def test_revision_changes_when_data_is_written(self) -> None:
+        before = snapshot_revision(self.storage.data_dir)
+        await self.storage.create_system("Cup", max_players=4)
+        after = snapshot_revision(self.storage.data_dir)
+
+        self.assertNotEqual(before, after)
 
 
 if __name__ == "__main__":
