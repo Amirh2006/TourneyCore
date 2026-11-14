@@ -3,7 +3,7 @@
 This package contains the framework-independent business logic of the project:
 
 * :mod:`core.models` - Pydantic data models persisted in the JSON database.
-* :mod:`core.storage` - Asynchronous JSON serialization layer (later phases).
+* :mod:`core.storage` - Asynchronous, atomic JSON persistence layer.
 * :mod:`core.bracket` - Double-elimination progression engine (later phases).
 
 Only the core layer knows about tournament rules. The Telegram bot, the CLI
@@ -22,14 +22,32 @@ from core.models import (
     WinMethod,
     generate_entry_code,
 )
+from core.storage import (
+    DEFAULT_DATA_DIR,
+    CorruptDatabaseError,
+    DatabaseValidationError,
+    DuplicateEntryCodeError,
+    JsonCollection,
+    RecordNotFoundError,
+    StorageError,
+    StorageManager,
+)
 
 __all__ = [
     "BracketSide",
+    "CorruptDatabaseError",
+    "DEFAULT_DATA_DIR",
+    "DatabaseValidationError",
+    "DuplicateEntryCodeError",
     "GamingSystem",
+    "JsonCollection",
     "Match",
     "MatchStatus",
     "Player",
     "PlayerStatus",
+    "RecordNotFoundError",
+    "StorageError",
+    "StorageManager",
     "SystemStatus",
     "WinMethod",
     "generate_entry_code",
