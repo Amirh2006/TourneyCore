@@ -57,6 +57,7 @@ __all__ = [
     "advance_match",
     "build_bracket",
     "find_next_match",
+    "is_match_dead",
     "is_tournament_over",
     "make_grand_final",
 ]
@@ -119,11 +120,96 @@ def _slot_for(source: Match, target: Match, *, is_loser: bool) -> int:
     return 1
 
 
-def _offer(target: Match, player_id: str | None, slot: int) -> None:
-    """Place ``player_id`` into ``slot`` and mark the target ready if full."""
+def _find_feeder(
+    matches: Sequence[Match], target: Match, slot: int
+) -> tuple[Match | None, bool]:
+    """Return the match that feeds ``target``'s slot and whether it feeds a loser.
+
+    The second element is ``False`` when the upstream **winner** advances into
+    the slot and ``True`` when the upstream **loser** drops into it. A return
+    value of ``(None, False)`` means the slot is a direct seed.
+    """
+
+    for source in matches:
+        if (
+            source.next_winner_match_id == target.id
+            and _slot_for(source, target, is_loser=False) == slot
+        ):
+            return source, False
+        if (
+            source.next_loser_match_id == target.id
+            and _slot_for(source, target, is_loser=True) == slot
+        ):
+            return source, True
+    return None, False
+
+
+def _input_dead(matches: Sequence[Match], match: Match, slot: int) -> bool:
+    """Return ``True`` when nothing will ever occupy ``match``'s slot.
+
+    A slot is dead when it is a seed with no player, or when its feeder cannot
+    produce a participant: a match that is itself dead cannot yield a winner,
+    and only a fully populated (live) match yields a loser.
+    """
+
+    current = match.player1_id if slot == 0 else match.player2_id
+    if current is not None:
+        return False
+
+    source, feeds_loser = _find_feeder(matches, match, slot)
+    if source is None:
+        return True
+    if feeds_loser:
+        return not _match_live(matches, source)
+    return _match_dead(matches, source)
+
+
+def _match_dead(matches: Sequence[Match], match: Match) -> bool:
+    """Return ``True`` when neither slot of ``match`` can ever be filled."""
+
+    return _input_dead(matches, match, 0) and _input_dead(matches, match, 1)
+
+
+def _match_live(matches: Sequence[Match], match: Match) -> bool:
+    """Return ``True`` when both slots of ``match`` will eventually be filled."""
+
+    return not _input_dead(matches, match, 0) and not _input_dead(matches, match, 1)
+
+
+def _complete_bye(match: Match, winner_id: str) -> None:
+    """Complete ``match`` as a bye without recording a loss for anyone.
+
+    Byes never count as wins or losses, so this bypasses ``Match.complete``
+    (which requires a real opponent) and writes the fields in the order the
+    Pydantic validators expect.
+    """
+
+    match.is_bye = True
+    match.winner_id = winner_id
+    match.completed_at = Match.utc_now()
+    match.status = MatchStatus.COMPLETED
+
+
+def _offer(
+    matches: Sequence[Match],
+    target: Match,
+    player_id: str | None,
+    slot: int,
+) -> Match | None:
+    """Place ``player_id`` into ``slot`` and resolve byes on the way.
+
+    If the opposite slot can never be filled, the match is a bye: it is
+    completed immediately and its winner is forwarded to the next match. This
+    cascade is what makes non power-of-two brackets work.
+
+    Returns the match that finally received the player, or ``None`` when
+    ``player_id`` is empty.
+    """
 
     if not player_id:
-        return
+        return None
+    if target.status is MatchStatus.COMPLETED:
+        return target
 
     if slot == 0:
         if target.player1_id not in (None, player_id):
@@ -138,8 +224,32 @@ def _offer(target: Match, player_id: str | None, slot: int) -> None:
             )
         target.player2_id = player_id
 
-    if target.status is MatchStatus.PENDING and target.has_both_players:
-        target.status = MatchStatus.READY
+    if target.has_both_players:
+        if target.status is MatchStatus.PENDING:
+            target.status = MatchStatus.READY
+        return target
+
+    # Only one slot is filled. If the other can never be filled, this is a bye.
+    if not _input_dead(matches, target, 1 - slot):
+        return target
+
+    _complete_bye(target, player_id)
+
+    if target.next_winner_match_id is None:
+        return target
+
+    next_target = next(
+        (match for match in matches if match.id == target.next_winner_match_id),
+        None,
+    )
+    if next_target is None:
+        return target
+    return _offer(
+        matches,
+        next_target,
+        player_id,
+        _slot_for(target, next_target, is_loser=False),
+    )
 
 
 def _seed_order(size: int) -> list[int]:
@@ -215,8 +325,13 @@ def build_bracket(system_id: str, player_ids: Sequence[str]) -> list[Match]:
 
     Players are seeded in the order given (first element is seed 1). The
     function returns every match of the tournament, already linked through
-    ``next_winner_match_id`` / ``next_loser_match_id``. First-round matches are
-    populated and marked ``READY``; later matches fill in as results arrive.
+    ``next_winner_match_id`` / ``next_loser_match_id``.
+
+    Any player count from two upwards is supported. When the roster is not a
+    power of two the bracket is padded to the next size with byes, awarded to
+    the top seeds. A bye is stored as a completed ``is_bye`` match so the graph
+    stays complete, and the player is forwarded immediately. Byes in the
+    losers bracket are resolved lazily as results arrive.
 
     Args:
         system_id: Identifier of the owning gaming system.
@@ -226,13 +341,8 @@ def build_bracket(system_id: str, player_ids: Sequence[str]) -> list[Match]:
         A list of :class:`~core.models.Match` objects.
 
     Raises:
-        ValueError: If fewer than two players are supplied, identifiers are not
-            unique, or the count is not a power of two.
-
-    Note:
-        Non power-of-two fields require bye scheduling, which is not part of
-        this engine yet. Pad the roster to 2, 4, 8, 16... players or schedule
-        explicit walkovers before calling this function.
+        ValueError: If fewer than two players are supplied or identifiers are
+            not unique.
     """
 
     roster = list(player_ids)
@@ -241,13 +351,8 @@ def build_bracket(system_id: str, player_ids: Sequence[str]) -> list[Match]:
     if len(set(roster)) != len(roster):
         raise ValueError("Player identifiers must be unique.")
 
-    size = len(roster)
-    if size & (size - 1):
-        raise ValueError(
-            "build_bracket requires a power-of-two player count "
-            f"(got {size}). Pad the roster or schedule byes first."
-        )
-
+    # Smallest power of two that can hold the roster.
+    size = 1 << (len(roster) - 1).bit_length()
     rounds = int(math.log2(size))
     matches: list[Match] = []
     winners: dict[tuple[int, int], Match] = {}
@@ -333,12 +438,29 @@ def build_bracket(system_id: str, player_ids: Sequence[str]) -> list[Match]:
     slots: list[str | None] = [None] * size
     order = _seed_order(size)
     for position, seed in enumerate(order):
-        slots[position] = roster[seed - 1]
+        if seed <= len(roster):
+            slots[position] = roster[seed - 1]
 
     for position in range(size // 2):
         winners[(1, position)].assign_players(
             slots[2 * position], slots[2 * position + 1]
         )
+
+    # Resolve first-round byes only after every slot is populated, otherwise a
+    # not-yet-assigned neighbour looks like a dead slot and the bye cascades
+    # too far.
+    for position in range(size // 2):
+        first_round = winners[(1, position)]
+        filled = [
+            player_id
+            for player_id in (first_round.player1_id, first_round.player2_id)
+            if player_id
+        ]
+        if len(filled) == 1 and rounds >= 2:
+            # A first-round bye: complete the slot and forward the player.
+            _complete_bye(first_round, filled[0])
+            target = winners[(2, position // 2)]
+            _offer(matches, target, filled[0], position % 2)
 
     return matches
 
@@ -396,19 +518,35 @@ def advance_match(
 
     next_winner: Match | None = None
     if match.next_winner_match_id is not None:
-        next_winner = _require(index, match.next_winner_match_id)
-        _offer(next_winner, winner_id, _slot_for(match, next_winner, is_loser=False))
+        winner_target = _require(index, match.next_winner_match_id)
+        next_winner = _offer(
+            matches,
+            winner_target,
+            winner_id,
+            _slot_for(match, winner_target, is_loser=False),
+        )
 
     next_loser: Match | None = None
     if match.next_loser_match_id is not None:
-        next_loser = _require(index, match.next_loser_match_id)
-        _offer(
-            next_loser,
+        loser_target = _require(index, match.next_loser_match_id)
+        next_loser = _offer(
+            matches,
+            loser_target,
             match.loser_id,
-            _slot_for(match, next_loser, is_loser=True),
+            _slot_for(match, loser_target, is_loser=True),
         )
 
     return next_winner, next_loser
+
+
+def is_match_dead(matches: Sequence[Match], match: Match) -> bool:
+    """Return ``True`` when a padded-bracket match will never be played.
+
+    Byes can leave parts of the losers bracket unreachable. Such matches stay
+    ``PENDING`` forever, so presentation layers can hide them.
+    """
+
+    return _match_dead(matches, match)
 
 
 def find_next_match(

@@ -8,6 +8,7 @@ from core.bracket import (
     advance_match,
     build_bracket,
     find_next_match,
+    is_match_dead,
     is_tournament_over,
     make_grand_final,
 )
@@ -59,15 +60,71 @@ class BuildBracketTests(unittest.TestCase):
         self.assertIs(terminal[0].bracket, BracketSide.GRAND_FINAL)
         self.assertEqual(terminal[0].round, 2)
 
-    def test_rejects_non_power_of_two(self) -> None:
-        players = [make_player("sys_1", name) for name in "ABCDE"]
-        with self.assertRaises(ValueError):
-            build_bracket("sys_1", [p.id for p in players])
-
     def test_rejects_duplicate_players(self) -> None:
         player = make_player("sys_1", "A")
         with self.assertRaises(ValueError):
             build_bracket("sys_1", [player.id, player.id])
+
+    def test_three_player_bracket_has_a_bye(self) -> None:
+        players = [make_player("sys_1", name) for name in "ABC"]
+        matches = build_bracket("sys_1", [p.id for p in players])
+
+        byes = [m for m in matches if m.is_bye]
+        self.assertEqual(len(byes), 1)
+        self.assertIs(byes[0].status, MatchStatus.COMPLETED)
+
+    def test_padded_bracket_marks_unreachable_matches(self) -> None:
+        players = [make_player("sys_1", f"P{index}") for index in range(1, 6)]
+        matches = build_bracket("sys_1", [p.id for p in players])
+
+        dead = [match for match in matches if is_match_dead(matches, match)]
+        self.assertTrue(dead)
+        self.assertTrue(
+            all(match.status is MatchStatus.PENDING for match in dead)
+        )
+
+        full = build_bracket(
+            "sys_1", [make_player("sys_1", name).id for name in "ABCD"]
+        )
+        self.assertFalse(
+            [match for match in full if is_match_dead(full, match)]
+        )
+
+    def test_every_roster_size_finishes(self) -> None:
+        for size in range(2, 13):
+            with self.subTest(size=size):
+                players = [
+                    make_player("sys_1", f"P{index}") for index in range(1, size + 1)
+                ]
+                matches = build_bracket("sys_1", [p.id for p in players])
+
+                guard = 0
+                while not is_tournament_over(matches, players):
+                    guard += 1
+                    self.assertLess(guard, 200, "tournament did not progress")
+                    ready = [
+                        match
+                        for match in matches
+                        if match.status is MatchStatus.READY
+                    ]
+                    self.assertTrue(ready, "tournament stalled with no ready match")
+                    match = ready[0]
+                    advance_match(
+                        matches, match.id, match.player1_id, players=players
+                    )
+
+                active = [
+                    player
+                    for player in players
+                    if player.status
+                    not in (PlayerStatus.ELIMINATED, PlayerStatus.WITHDRAWN)
+                ]
+                self.assertEqual(len(active), 1)
+                champion = active[0]
+                self.assertIn(champion.losses, (0, 1))
+                for player in players:
+                    if player is not champion:
+                        self.assertEqual(player.losses, 2)
 
 
 class AdvanceMatchTests(unittest.TestCase):

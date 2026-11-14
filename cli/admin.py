@@ -30,6 +30,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from core.bracket import (
     advance_match,
     build_bracket,
+    is_match_dead,
     is_tournament_over,
 )
 from core.models import (
@@ -68,7 +69,10 @@ def _match_line(match: Match, players: Sequence[Player]) -> str:
 
     left = _player_name(players, match.player1_id)
     right = _player_name(players, match.player2_id)
-    if match.status is MatchStatus.COMPLETED and match.winner_id is not None:
+    if match.status is MatchStatus.COMPLETED and match.is_bye:
+        winner = _player_name(players, match.winner_id)
+        result = f"bye -> {winner}"
+    elif match.status is MatchStatus.COMPLETED and match.winner_id is not None:
         winner = _player_name(players, match.winner_id)
         score = ""
         if match.score_player1 is not None or match.score_player2 is not None:
@@ -85,7 +89,13 @@ def _match_line(match: Match, players: Sequence[Player]) -> str:
 
 
 def _print_matches(matches: Sequence[Match], players: Sequence[Player]) -> None:
-    """Print matches grouped by bracket side."""
+    """Print matches grouped by bracket side, hiding unreachable ones."""
+
+    visible = [
+        match
+        for match in matches
+        if not (match.status is MatchStatus.PENDING and is_match_dead(matches, match))
+    ]
 
     groups = (
         (BracketSide.WINNERS, "Winners bracket"),
@@ -93,7 +103,7 @@ def _print_matches(matches: Sequence[Match], players: Sequence[Player]) -> None:
         (BracketSide.GRAND_FINAL, "Grand final"),
     )
     for side, title in groups:
-        group = [match for match in matches if match.bracket is side]
+        group = [match for match in visible if match.bracket is side]
         if not group:
             continue
         print(f"{title}:")
@@ -307,13 +317,15 @@ async def _record_result(
         print(f"Cannot record result: {error}", file=sys.stderr)
         return 1
 
-    # Persist every match the engine touched.
-    touched = [target]
-    for candidate in (next_winner, next_loser):
-        if candidate is not None and candidate not in touched:
-            touched.append(candidate)
-    for stored in touched:
-        await storage.save_match(stored)
+    # Persist the whole bracket of this system. A bye cascade can complete
+    # intermediate matches that are not returned by ``advance_match``, so
+    # saving only the direct targets would drop those updates.
+    other_systems = [
+        item
+        for item in await storage.list_matches()
+        if item.system_id != match.system_id
+    ]
+    await storage.save_matches([*other_systems, *matches])
 
     for player in players:
         await storage.save_player(player)
@@ -328,9 +340,15 @@ async def _record_result(
         await storage.save_system(system)
         print(f"Tournament {system.id} is complete.")
 
-    for label, target in (("Next winners match", next_winner), ("Next losers match", next_loser)):
-        if target is not None:
-            print(f"{label}: {target.id} [{target.status.value}]")
+    if next_winner is not None and next_winner is next_loser:
+        print(f"Next match: {next_winner.id} [{next_winner.status.value}]")
+    else:
+        for label, target in (
+            ("Next winners match", next_winner),
+            ("Next losers match", next_loser),
+        ):
+            if target is not None:
+                print(f"{label}: {target.id} [{target.status.value}]")
 
     return 0
 
