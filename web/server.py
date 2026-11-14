@@ -69,6 +69,7 @@ CONTENT_TYPES: dict[str, str] = {
 TELEGRAM_ORIGINS = "https://web.telegram.org https://telegram.org https://*.telegram.org"
 
 SECURITY_HEADERS: dict[str, str] = {
+    "Access-Control-Allow-Origin": "*",
     "Content-Security-Policy": (
         "default-src 'self'; "
         "script-src 'self' https://telegram.org; "

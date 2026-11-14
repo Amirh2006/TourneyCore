@@ -25,9 +25,9 @@
   };
 
   const THEME_KEY = "tourneycore.theme";
-  const DEFAULT_REFRESH_MS = 10000;
-
-  const state = {
+const DEFAULT_REFRESH_MS = 10000;
+const BASE_URL = "https://defining-such-workstation-savings.trycloudflare.com";
+const state = {
     systems: [],
     currentId: null,
     dashboard: null,
@@ -145,8 +145,8 @@
   /* ------------------------------------------------------------------ */
   /* Data                                                                */
   /* ------------------------------------------------------------------ */
-  async function fetchJson(path) {
-    const response = await fetch(path, {
+async function fetchJson(path) {
+    const response = await fetch(BASE_URL + path, {
       headers: { Accept: "application/json" },
       cache: "no-store",
     });
@@ -257,12 +257,12 @@
     }, state.refreshMs);
   }
 
-  function connectStream() {
+function connectStream() {
     if (!("EventSource" in window)) return;
 
     let stream;
     try {
-      stream = new EventSource("/api/stream");
+      stream = new EventSource(BASE_URL + "/api/stream");
     } catch {
       return;
     }
