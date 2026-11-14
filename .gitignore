@@ -7,6 +7,9 @@ __pycache__/
 venv/
 .env/
 
+# Runtime JSON database
+data/
+
 # OS
 .DS_Store
 *.swp
