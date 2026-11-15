@@ -25,8 +25,8 @@ enabled = true
 # ---------------------------------------------------------------------------
 [vars]
 # Public HTTPS URL of the mini-app (Cloudflare Pages), used by /app.
-# MINI_APP_URL = "https://tourneycore.pages.dev"
-
+ MINI_APP_URL = "https://tourneycore.pages.dev"
+TOURNEYCORE_WEBAPP_URL = "https://48372370.tourneycore-app.pages.dev"
 # Optional custom domain:
 # routes = [
 #   { pattern = "api.example.com", custom_domain = true }
