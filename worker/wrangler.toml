@@ -23,10 +23,11 @@ enabled = true
 # Optional secret (strongly recommended):
 #   wrangler secret put TELEGRAM_WEBHOOK_SECRET
 # ---------------------------------------------------------------------------
-[vars]
+
 # Public HTTPS URL of the mini-app (Cloudflare Pages), used by /app.
- MINI_APP_URL = "https://tourneycore.pages.dev"
-TOURNEYCORE_WEBAPP_URL = "https://48372370.tourneycore-app.pages.dev"
+[vars]
+MINI_APP_URL = "https://tourneycore-app.pages.dev"
+TOURNEYCORE_WEBAPP_URL = "https://tourneycore-app.pages.dev"
 # Optional custom domain:
 # routes = [
 #   { pattern = "api.example.com", custom_domain = true }
