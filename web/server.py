@@ -174,6 +174,14 @@ class TourneyCoreHandler(BaseHTTPRequestHandler):
         self._head_only = True
         self.do_GET()
 
+    def do_OPTIONS(self) -> None:
+        """Handle CORS preflight requests."""
+        self.send_response(HTTPStatus.NO_CONTENT)
+        self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "*")
+        self._send_security_headers()
+        self.end_headers()
+
     def do_POST(self) -> None:  # noqa: N802
         self._method_not_allowed()
 
