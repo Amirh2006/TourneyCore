@@ -25,9 +25,18 @@
   };
 
   const THEME_KEY = "tourneycore.theme";
-const DEFAULT_REFRESH_MS = 10000;
-const BASE_URL = "https://defining-such-workstation-savings.trycloudflare.com";
-const state = {
+  const DEFAULT_REFRESH_MS = 10000;
+
+  // The Worker serves the API; the mini-app may be hosted on Cloudflare Pages
+  // (a different origin). Set `window.TOURNEYCORE_API_BASE` or the
+  // `tourneycore-api` meta tag to the Worker URL. Empty means same origin.
+  const API_BASE = (
+    window.TOURNEYCORE_API_BASE ||
+    document.querySelector('meta[name="tourneycore-api"]')?.content ||
+    ""
+  ).replace(/\/+$/, "");
+
+  const state = {
     systems: [],
     currentId: null,
     dashboard: null,
@@ -145,8 +154,8 @@ const state = {
   /* ------------------------------------------------------------------ */
   /* Data                                                                */
   /* ------------------------------------------------------------------ */
-async function fetchJson(path) {
-    const response = await fetch(BASE_URL + path, {
+  async function fetchJson(path) {
+    const response = await fetch(API_BASE + path, {
       headers: { Accept: "application/json" },
       cache: "no-store",
     });
@@ -255,28 +264,6 @@ async function fetchJson(path) {
     state.timer = window.setInterval(() => {
       if (!document.hidden) loadDashboard({ silent: true });
     }, state.refreshMs);
-  }
-
-function connectStream() {
-    if (!("EventSource" in window)) return;
-
-    let stream;
-    try {
-      stream = new EventSource(BASE_URL + "/api/stream");
-    } catch {
-      return;
-    }
-
-    // Coalesce bursts of changes (one CLI command rewrites several files).
-    let pending = null;
-    stream.addEventListener("update", () => {
-      if (pending) return;
-      pending = window.setTimeout(() => {
-        pending = null;
-        if (!document.hidden) loadDashboard({ silent: true });
-      }, 300);
-    });
-    // EventSource reconnects on its own; the interval stays as a fallback.
   }
 
   /* ------------------------------------------------------------------ */
@@ -529,7 +516,6 @@ function connectStream() {
     configureRefresh();
     await loadSystems();
     scheduleRefresh();
-    connectStream();
   }
 
   bootstrap();

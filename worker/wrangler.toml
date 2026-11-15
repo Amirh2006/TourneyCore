@@ -1,0 +1,33 @@
+#:schema node_modules/wrangler/config-schema.json
+
+name = "tourneycore"
+main = "src/index.ts"
+compatibility_date = "2026-11-01"
+
+# supabase-js prefers Node's async primitives at the edge. The flag is
+# harmless when unused and keeps the Supabase client portable.
+compatibility_flags = ["nodejs_compat"]
+
+# Structured request logs and uncaught errors in the Cloudflare dashboard.
+[observability]
+enabled = true
+
+# ---------------------------------------------------------------------------
+# Non-secret configuration only. Never put tokens or keys in this file.
+#
+# Required secrets (set once per environment):
+#   wrangler secret put TELEGRAM_BOT_TOKEN
+#   wrangler secret put SUPABASE_URL
+#   wrangler secret put SUPABASE_SERVICE_ROLE_KEY
+#
+# Optional secret (strongly recommended):
+#   wrangler secret put TELEGRAM_WEBHOOK_SECRET
+# ---------------------------------------------------------------------------
+[vars]
+# Public HTTPS URL of the mini-app (Cloudflare Pages), used by /app.
+# MINI_APP_URL = "https://tourneycore.pages.dev"
+
+# Optional custom domain:
+# routes = [
+#   { pattern = "api.example.com", custom_domain = true }
+# ]

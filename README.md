@@ -7,6 +7,12 @@ Mini-App) on top of a plain JSON database.
 Tournament rules live in `core/` only. The CLI, the bot and the web API are
 thin presentation layers, so the same data can be driven from any of them.
 
+> **Serverless migration:** [`worker/`](worker/README.md) contains the
+> Cloudflare Workers + Hono implementation. It replaces long polling with
+> `POST /webhook`, reads the existing Supabase schema, and serves the REST API
+> used by the mini-app. The Python implementation below stays available for
+> local development until the cut-over is complete.
+
 ## Features
 
 - Double elimination with winners bracket, losers bracket and a grand final

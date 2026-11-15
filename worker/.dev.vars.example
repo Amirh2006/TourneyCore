@@ -1,0 +1,14 @@
+# Copy this file to `.dev.vars` for `npm run dev`.
+# `.dev.vars` is ignored by git and must never be committed.
+
+TELEGRAM_BOT_TOKEN=123456789:AA-your-bot-token
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+
+# Optional, but strongly recommended: verify Telegram's
+# `X-Telegram-Bot-Api-Secret-Token` header on POST /webhook.
+# Generate one with: openssl rand -hex 32
+TELEGRAM_WEBHOOK_SECRET=
+
+# Optional: public HTTPS URL of the Cloudflare Pages mini-app.
+MINI_APP_URL=
