@@ -36,6 +36,7 @@ export interface PlayerRow {
   created_at: string;
   registered_at: string | null;
   eliminated_at: string | null;
+  role: string;
 }
 
 export interface MatchRow {

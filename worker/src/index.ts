@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-
+import { authMiddleware } from './lib/auth';
 import type { Env } from './env';
 import { ApiError } from './lib/errors';
 import { apiRoutes } from './routes/api';
@@ -8,11 +8,6 @@ import { webhookRoutes } from './routes/webhook';
 
 const app = new Hono<{ Bindings: Env }>();
 
-// ---------------------------------------------------------------------------
-// Middleware
-// ---------------------------------------------------------------------------
-
-/** Structured request log, visible in `wrangler tail` and Workers Logs. */
 app.use('*', async (c, next) => {
   const startedAt = Date.now();
   await next();
@@ -27,19 +22,12 @@ app.use('*', async (c, next) => {
   );
 });
 
-/**
- * Strict CORS for the separately hosted mini-app.
- *
- * Preflight requests get an immediate 204 with no body. Every other response
- * carries the same headers, including errors, so the browser can read the
- * JSON detail instead of reporting a generic "Failed to fetch".
- */
 app.use('*', async (c, next) => {
   c.header('Access-Control-Allow-Origin', '*');
-  c.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  c.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   c.header(
     'Access-Control-Allow-Headers',
-    'Content-Type, Authorization, X-Requested-With',
+    'Content-Type, Authorization, X-Requested-With, X-Telegram-Init-Data, Accept',
   );
   c.header('Access-Control-Max-Age', '86400');
   c.header('Vary', 'Origin');
@@ -53,10 +41,7 @@ app.use('*', async (c, next) => {
   await next();
 });
 
-// ---------------------------------------------------------------------------
-// Routes
-// ---------------------------------------------------------------------------
-
+app.use('/api/*', authMiddleware);
 app.route('/', webhookRoutes);
 app.route('/api', apiRoutes);
 
@@ -69,26 +54,17 @@ app.get('/', (c) =>
   }),
 );
 
-// ---------------------------------------------------------------------------
-// Error handling
-// ---------------------------------------------------------------------------
-
 app.notFound((c) =>
-  c.json(
-    { error: 'not_found', detail: `Unknown endpoint '${c.req.path}'.` },
-    404,
-  ),
+  c.json({ error: 'not_found', detail: `Unknown endpoint '${c.req.path}'.` }, 404),
 );
 
 app.onError((error, c) => {
   if (error instanceof ApiError) {
     return c.json({ error: error.code, detail: error.message }, error.status);
   }
-
   if (error instanceof HTTPException) {
     return error.getResponse();
   }
-
   console.error(
     JSON.stringify({
       level: 'error',
@@ -98,11 +74,7 @@ app.onError((error, c) => {
       stack: error.stack,
     }),
   );
-
-  return c.json(
-    { error: 'internal_error', detail: 'Unexpected server error.' },
-    500,
-  );
+  return c.json({ error: 'internal_error', detail: 'Unexpected server error.' }, 500);
 });
 
 export default app;

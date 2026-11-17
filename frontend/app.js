@@ -1,220 +1,66 @@
-/* TourneyCore mini-app — read-only live bracket.
- *
- * The page talks to three endpoints:
- *   GET /api/systems        -> tournament selector
- *   GET /api/systems/<id>   -> dashboard payload
- *   GET /api/health         -> liveness probe
- *
- * All rendering is done with DOM APIs (never innerHTML) so player names are
- * always treated as text, and all bracket rules live on the server.
- */
 (() => {
   "use strict";
 
-  const SIDES = [
-    { key: "winners", title: "Winners bracket" },
-    { key: "losers", title: "Losers bracket" },
-    { key: "grand_final", title: "Grand final" },
-  ];
-
-  const STATUS_LABELS = {
-    pending: "Pending",
-    ready: "Ready",
-    active: "Live",
-    completed: "Final",
-  };
-
+  const SIDES = [{ key: "winners", title: "Winners bracket" }, { key: "losers", title: "Losers bracket" }, { key: "grand_final", title: "Grand final" }];
+  const STATUS_LABELS = { pending: "Pending", ready: "Ready", active: "Live", completed: "Final" };
+  const STATUS_ICONS = { pending: "🟡", active: "🟢", completed: "🔴" };
   const THEME_KEY = "tourneycore.theme";
   const DEFAULT_REFRESH_MS = 10000;
+  const API_BASE = (window.TOURNEYCORE_API_BASE || document.querySelector('meta[name="tourneycore-api"]')?.content || "").replace(/\/+$/, "");
 
-  // The Worker serves the API; the mini-app may be hosted on Cloudflare Pages
-  // (a different origin). Set `window.TOURNEYCORE_API_BASE` or the
-  // `tourneycore-api` meta tag to the Worker URL. Empty means same origin.
-  const API_BASE = (
-    window.TOURNEYCORE_API_BASE ||
-    document.querySelector('meta[name="tourneycore-api"]')?.content ||
-    ""
-  ).replace(/\/+$/, "");
-
-  const state = {
-    systems: [],
-    currentId: null,
-    dashboard: null,
-    timer: null,
-    refreshMs: DEFAULT_REFRESH_MS,
-    loading: false,
-  };
-
-  const tg =
-    window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
+  const state = { systems: [], currentId: null, dashboard: null, timer: null, refreshMs: DEFAULT_REFRESH_MS, loading: false, userRole: 'guest' };
+  const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
 
   const dom = {
-    systemSelect: document.getElementById("system-select"),
-    refreshButton: document.getElementById("refresh-button"),
-    themeButton: document.getElementById("theme-button"),
-    alert: document.getElementById("alert"),
-    hero: document.getElementById("hero"),
-    heroStatus: document.getElementById("hero-status"),
-    heroTitle: document.getElementById("hero-title"),
-    heroDescription: document.getElementById("hero-description"),
-    stats: document.getElementById("stats"),
-    champion: document.getElementById("champion"),
-    championName: document.getElementById("champion-name"),
-    standingsPanel: document.getElementById("standings-panel"),
-    standingsBody: document.getElementById("standings-body"),
-    standingsHint: document.getElementById("standings-hint"),
-    brackets: document.getElementById("brackets"),
-    empty: document.getElementById("empty-state"),
-    footerStatus: document.getElementById("footer-status"),
+    systemSelect: document.getElementById("system-select"), refreshButton: document.getElementById("refresh-button"),
+    themeButton: document.getElementById("theme-button"), alert: document.getElementById("alert"),
+    hero: document.getElementById("hero"), heroStatus: document.getElementById("hero-status"), heroTitle: document.getElementById("hero-title"),
+    heroDescription: document.getElementById("hero-description"), stats: document.getElementById("stats"),
+    champion: document.getElementById("champion"), championName: document.getElementById("champion-name"),
+    standingsPanel: document.getElementById("standings-panel"), standingsBody: document.getElementById("standings-body"), standingsHint: document.getElementById("standings-hint"),
+    brackets: document.getElementById("brackets"), empty: document.getElementById("empty-state"), footerStatus: document.getElementById("footer-status"),
   };
 
-  /* ------------------------------------------------------------------ */
-  /* Small helpers                                                       */
-  /* ------------------------------------------------------------------ */
-  function node(tag, className, text) {
-    const element = document.createElement(tag);
-    if (className) element.className = className;
-    if (text !== undefined && text !== null) element.textContent = String(text);
-    return element;
-  }
+  function node(tag, className, text) { const el = document.createElement(tag); if (className) el.className = className; if (text !== undefined && text !== null) el.textContent = String(text); return el; }
+  function show(element, visible) { if (element) element.hidden = !visible; }
+  function capitalize(value) { return value ? value.charAt(0).toUpperCase() + value.slice(1) : ""; }
+  function setAlert(message) { dom.alert.textContent = message || ""; show(dom.alert, !!message); }
 
-  function show(element, visible) {
-    element.hidden = !visible;
-  }
+  function readStoredTheme() { try { return localStorage.getItem(THEME_KEY); } catch { return null; } }
+  function storeTheme(theme) { try { localStorage.setItem(THEME_KEY, theme); } catch {} }
+  function applyTheme(theme) { document.documentElement.dataset.theme = theme; dom.themeButton.textContent = theme === "dark" ? "🌙" : "☀️"; }
+  function initialTheme() { const stored = readStoredTheme(); if (stored) return stored; if (tg && tg.colorScheme) return tg.colorScheme; return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark"; }
 
-  function capitalize(value) {
-    if (!value) return "";
-    return value.charAt(0).toUpperCase() + value.slice(1);
-  }
+  function setupTelegram() { if (tg) { try { tg.ready(); tg.expand(); } catch {} } }
 
-  function setAlert(message) {
-    if (!message) {
-      dom.alert.textContent = "";
-      show(dom.alert, false);
-      return;
-    }
-    dom.alert.textContent = message;
-    show(dom.alert, true);
-  }
-
-  /* ------------------------------------------------------------------ */
-  /* Theme                                                               */
-  /* ------------------------------------------------------------------ */
-  function readStoredTheme() {
-    try {
-      return localStorage.getItem(THEME_KEY);
-    } catch {
-      return null;
-    }
-  }
-
-  function storeTheme(theme) {
-    try {
-      localStorage.setItem(THEME_KEY, theme);
-    } catch {
-      /* Private mode: the theme simply is not persisted. */
-    }
-  }
-
-  function applyTheme(theme) {
-    const resolved = theme === "light" ? "light" : "dark";
-    document.documentElement.dataset.theme = resolved;
-    dom.themeButton.textContent = resolved === "dark" ? "🌙" : "☀️";
-    dom.themeButton.title =
-      resolved === "dark" ? "Switch to light theme" : "Switch to dark theme";
-  }
-
-  function initialTheme() {
-    const stored = readStoredTheme();
-    if (stored === "dark" || stored === "light") return stored;
-    if (tg && (tg.colorScheme === "dark" || tg.colorScheme === "light")) {
-      return tg.colorScheme;
-    }
-    const prefersLight =
-      window.matchMedia &&
-      window.matchMedia("(prefers-color-scheme: light)").matches;
-    return prefersLight ? "light" : "dark";
-  }
-
-  function setupTelegram() {
-    if (!tg) return;
-    try {
-      tg.ready();
-      tg.expand();
-    } catch {
-      /* Older clients may not implement every method. */
-    }
-    if (typeof tg.onEvent === "function") {
-      tg.onEvent("themeChanged", () => {
-        if (!readStoredTheme()) applyTheme(initialTheme());
-      });
-    }
-  }
-
-  /* ------------------------------------------------------------------ */
-  /* Data                                                                */
-  /* ------------------------------------------------------------------ */
-  async function fetchJson(path) {
-    const response = await fetch(API_BASE + path, {
-      headers: { Accept: "application/json" },
-      cache: "no-store",
-    });
+  async function fetchJson(path, options = {}) {
+    const headers = { Accept: "application/json", ...options.headers };
+    if (tg && tg.initData) headers['X-Telegram-Init-Data'] = tg.initData;
+    const response = await fetch(API_BASE + path, { ...options, headers, cache: "no-store" });
     if (!response.ok) {
       let detail = `${response.status} ${response.statusText}`;
-      try {
-        const body = await response.json();
-        if (body && body.detail) detail = body.detail;
-      } catch {
-        /* Non-JSON error page. */
-      }
+      try { const body = await response.json(); if (body && body.detail) detail = body.detail; } catch {}
       throw new Error(detail);
     }
     return response.json();
   }
 
-  function configureRefresh() {
-    const raw = Number(
-      new URLSearchParams(window.location.search).get("refresh")
-    );
-    if (Number.isFinite(raw) && raw >= 3000 && raw <= 60000) {
-      state.refreshMs = raw;
-    }
-  }
+  function configureRefresh() { const raw = Number(new URLSearchParams(window.location.search).get("refresh")); if (raw >= 3000) state.refreshMs = raw; }
 
   async function loadSystems() {
     try {
       const data = await fetchJson("/api/systems");
       state.systems = Array.isArray(data.systems) ? data.systems : [];
       populateSystemSelect();
-
-      if (!state.systems.length) {
-        renderEmpty();
-        return;
-      }
-
-      const preferred = new URLSearchParams(window.location.search).get(
-        "system"
-      );
-      const target =
-        state.systems.find((system) => system.id === preferred) ||
-        state.systems.find((system) => system.status === "running") ||
-        state.systems[0];
-
-      dom.systemSelect.value = target.id;
-      await loadDashboard({ systemId: target.id });
-    } catch (error) {
-      setAlert(`Could not load tournaments: ${error.message}`);
-      dom.footerStatus.textContent = "Offline";
-    }
+      if (!state.systems.length) return renderEmpty(data.userRole || 'guest');
+      dom.systemSelect.value = state.systems[0].id;
+      await loadDashboard({ systemId: state.systems[0].id });
+    } catch (error) { setAlert(`Could not load tournaments: ${error.message}`); }
   }
 
   function populateSystemSelect() {
-    const options = state.systems.map((system) =>
-      node("option", null, `${system.name} — ${system.status}`)
-    );
-    options.forEach((option, index) => {
-      option.value = state.systems[index].id;
-    });
+    const options = state.systems.map(s => node("option", null, `${STATUS_ICONS[s.status] || "⚪"} ${s.name}`));
+    options.forEach((opt, i) => { opt.value = state.systems[i].id; });
     dom.systemSelect.replaceChildren(...options);
   }
 
@@ -222,301 +68,194 @@
     if (!systemId) return;
     state.currentId = systemId;
     dom.systemSelect.value = systemId;
-    const url = new URL(window.location.href);
-    url.searchParams.set("system", systemId);
-    window.history.replaceState({}, "", url);
     loadDashboard({ systemId });
   }
 
   async function loadDashboard({ systemId, silent = false, manual = false } = {}) {
     const id = systemId || state.currentId || dom.systemSelect.value;
     if (!id || state.loading) return;
-
     state.loading = true;
     if (manual) dom.refreshButton.classList.add("is-spinning");
-
     try {
       const data = await fetchJson(`/api/systems/${encodeURIComponent(id)}`);
-      state.currentId = id;
-      state.dashboard = data;
-      setAlert("");
-      render(data);
-      const stamp = new Date().toLocaleTimeString([], {
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-      });
-      dom.footerStatus.textContent = `Updated ${stamp} · auto-refresh ${Math.round(
-        state.refreshMs / 1000
-      )}s`;
-    } catch (error) {
-      if (!silent) setAlert(`Could not load the bracket: ${error.message}`);
-      dom.footerStatus.textContent = "Connection problem — retrying…";
-    } finally {
-      state.loading = false;
-      dom.refreshButton.classList.remove("is-spinning");
-      scheduleRefresh();
-    }
+      state.currentId = id; state.dashboard = data; state.userRole = data.userRole || 'guest'; setAlert(""); render(data);
+    } catch (error) { if (!silent) setAlert(`Could not load bracket: ${error.message}`); }
+    finally { state.loading = false; dom.refreshButton.classList.remove("is-spinning"); scheduleRefresh(); }
   }
 
   function scheduleRefresh() {
     if (state.timer) window.clearInterval(state.timer);
-    state.timer = window.setInterval(() => {
-      if (!document.hidden) loadDashboard({ silent: true });
-    }, state.refreshMs);
+    state.timer = window.setInterval(() => { if (!document.hidden) loadDashboard({ silent: true }); }, state.refreshMs);
   }
 
-  /* ------------------------------------------------------------------ */
-  /* Rendering                                                           */
-  /* ------------------------------------------------------------------ */
+  function stat(value, label) { const card = node("div", "stat"); card.append(node("div", "stat__value", value), node("div", "stat__label", label)); return card; }
+
   function render(data) {
-    show(dom.empty, false);
-    renderHero(data);
-    renderChampion(data.champion);
-    renderStandings(data);
-    renderBrackets(data);
+    show(dom.empty, false); renderHero(data); renderChampion(data.champion); renderStandings(data); renderBrackets(data);
   }
 
-  function renderEmpty() {
-    show(dom.empty, true);
-    show(dom.hero, false);
-    show(dom.champion, false);
-    show(dom.standingsPanel, false);
-    dom.brackets.replaceChildren();
-    dom.systemSelect.replaceChildren();
+  function renderEmpty(userRole) {
+    show(dom.empty, true); show(dom.hero, false); show(dom.champion, false); show(dom.standingsPanel, false);
+    dom.brackets.replaceChildren(); dom.systemSelect.replaceChildren();
+    show(document.getElementById('admin-panel'), userRole === 'admin' || userRole === 'coworker');
+    show(document.getElementById('promote-btn'), userRole === 'admin');
     dom.footerStatus.textContent = "No tournaments";
   }
 
-  function stat(value, label) {
-    const card = node("div", "stat");
-    card.append(node("div", "stat__value", value));
-    card.append(node("div", "stat__label", label));
-    return card;
-  }
-
   function renderHero(data) {
-    const system = data.system || {};
-    const counts = data.counts || {};
-
-    dom.heroTitle.textContent = system.name || "Tournament";
-    dom.heroDescription.textContent = system.description || "";
-    show(dom.heroDescription, Boolean(system.description));
-
-    const status = capitalize(system.status);
-    dom.heroStatus.textContent = system.registration_open
-      ? `${status} · registration open`
-      : status;
-
-    dom.stats.replaceChildren(
-      stat(counts.players || 0, "Players"),
-      stat(counts.active || 0, "Live"),
-      stat(counts.ready || 0, "Ready"),
-      stat(counts.completed || 0, "Played")
-    );
-
+    const sys = data.system || {}, counts = data.counts || {}, role = data.userRole || 'guest';
+    dom.heroTitle.textContent = sys.name || "Tournament"; dom.heroDescription.textContent = sys.description || "";
+    show(dom.heroDescription, Boolean(sys.description));
+    dom.heroStatus.textContent = sys.registration_open ? `${STATUS_ICONS[sys.status] || "⚪"} ${capitalize(sys.status)} · registration open` : `${STATUS_ICONS[sys.status] || "⚪"} ${capitalize(sys.status)}`;
+    dom.stats.replaceChildren(stat(counts.players || 0, "Players"), stat(counts.active || 0, "Live"), stat(counts.ready || 0, "Ready"), stat(counts.completed || 0, "Played"));
+    show(document.getElementById('admin-panel'), role === 'admin' || role === 'coworker');
+    show(document.getElementById('player-panel'), role === 'player');
+    show(document.getElementById('promote-btn'), role === 'admin');
     show(dom.hero, true);
+    dom.footerStatus.textContent = `Role: ${role} | ${(tg && tg.initData) ? "Auth" : "No Auth"}`;
   }
 
-  function renderChampion(champion) {
-    if (!champion) {
-      show(dom.champion, false);
-      return;
-    }
-    dom.championName.textContent = champion.name;
-    show(dom.champion, true);
-  }
+  function renderChampion(champion) { if (!champion) { show(dom.champion, false); return; } dom.championName.textContent = champion.name; show(dom.champion, true); }
 
   function renderStandings(data) {
     const players = Array.isArray(data.players) ? data.players : [];
     show(dom.standingsPanel, players.length > 0);
-    dom.standingsHint.textContent =
-      players.length === 1 ? "1 player" : `${players.length} players`;
-
-    const rows = players.map((player, index) => {
-      const row = node("tr");
-      if (player.eliminated || player.withdrawn) row.classList.add("is-out");
-
-      const nameCell = node("td", "player");
-      nameCell.append(node("span", "player__name", player.name));
-      if (player.seed) {
-        nameCell.append(node("span", "player__seed", `#${player.seed}`));
-      }
-
-      const statusCell = node("td");
-      statusCell.append(
-        node(
-          "span",
-          player.eliminated || player.withdrawn ? "pill pill--muted" : "pill",
-          player.status
-        )
-      );
-
-      row.append(
-        node("td", "rank", index + 1),
-        nameCell,
-        node("td", "record", `${player.wins}–${player.losses}`),
-        statusCell
-      );
-      return row;
+    dom.standingsHint.textContent = `${players.length} players`;
+    const rows = players.map((p, i) => {
+      const r = node("tr"); if (p.eliminated || p.withdrawn) r.classList.add("is-out");
+      const nameCell = node("td", "player"); nameCell.append(node("span", "player__name", p.name));
+      if (p.seed) nameCell.append(node("span", "player__seed", `#${p.seed}`));
+      const statCell = node("td"); statCell.append(node("span", p.eliminated || p.withdrawn ? "pill pill--muted" : "pill", p.status));
+      r.append(node("td", "rank", i + 1), nameCell, node("td", "record", `${p.wins}–${p.losses}`), statCell);
+      return r;
     });
-
     dom.standingsBody.replaceChildren(...rows);
   }
 
   function renderBrackets(data) {
-    const brackets = data.brackets || {};
-    const sections = [];
-
+    const brackets = data.brackets || {}, sections = [];
     for (const side of SIDES) {
-      const matches = (brackets[side.key] || []).filter(
-        (match) => !match.is_dead
-      );
-      if (matches.length) {
-        sections.push(bracketSection(side.title, matches));
-      }
+      const matches = (brackets[side.key] || []).filter(m => !m.is_dead);
+      if (matches.length) sections.push(bracketSection(side.title, matches));
     }
-
-    if (!sections.length) {
-      dom.brackets.replaceChildren(
-        node("p", "bracket__empty", "The bracket has not been seeded yet.")
-      );
-      return;
-    }
-
+    if (!sections.length) { dom.brackets.replaceChildren(node("p", "bracket__empty", "The bracket has not been seeded yet.")); return; }
     dom.brackets.replaceChildren(...sections);
   }
 
   function bracketSection(title, matches) {
-    const section = node("section", "bracket");
-
-    const head = node("div", "bracket__head");
-    head.append(node("h2", null, title));
-    head.append(
-      node(
-        "span",
-        "bracket__count",
-        matches.length === 1 ? "1 match" : `${matches.length} matches`
-      )
-    );
+    const section = node("section", "bracket"), head = node("div", "bracket__head");
+    head.append(node("h2", null, title), node("span", "bracket__count", `${matches.length} matches`));
     section.append(head);
-
-    const rounds = new Map();
-    for (const match of matches) {
-      if (!rounds.has(match.round)) rounds.set(match.round, []);
-      rounds.get(match.round).push(match);
-    }
-
+    const rounds = new Map(); matches.forEach(m => { if (!rounds.has(m.round)) rounds.set(m.round, []); rounds.get(m.round).push(m); });
     const grid = node("div", "rounds");
-    for (const round of [...rounds.keys()].sort((a, b) => a - b)) {
-      const column = node("div", "round");
-      column.append(node("h3", "round__title", `Round ${round}`));
-      const list = node("div", "round__matches");
-      for (const match of rounds.get(round)) list.append(matchCard(match));
-      column.append(list);
-      grid.append(column);
-    }
-    section.append(grid);
-    return section;
+    [...rounds.keys()].sort((a,b)=>a-b).forEach(r => {
+      const col = node("div", "round"); col.append(node("h3", "round__title", `Round ${r}`));
+      const list = node("div", "round__matches"); rounds.get(r).forEach(m => list.append(matchCard(m)));
+      col.append(list); grid.append(col);
+    });
+    section.append(grid); return section;
   }
 
-  function scoreText(score) {
-    if (!score) return "";
-    const first = score.player1;
-    const second = score.player2;
-    const hasFirst = first !== null && first !== undefined;
-    const hasSecond = second !== null && second !== undefined;
-    if (!hasFirst && !hasSecond) return "";
-    return `${hasFirst ? first : "–"}–${hasSecond ? second : "–"}`;
-  }
+  function scoreText(score) { if (!score) return ""; const f = score.player1, s = score.player2; return (!f && !s) ? "" : `${f||"–"}–${s||"–"}`; }
 
   function matchCard(match) {
-    const card = node("article", `match match--${match.status}`);
-    if (match.is_bye) card.classList.add("match--bye");
+    const card = node("article", `match match--${match.status}`); if (match.is_bye) card.classList.add("match--bye");
+    const head = node("div", "match__head"); head.append(node("span", "match__round", `R${match.round}`), node("span", `pill pill--${match.status}`, STATUS_LABELS[match.status] || match.status));
+    card.append(head, slotRow(match, match.player1, 1), slotRow(match, match.player2, 2));
+    if (match.is_bye) card.append(node("p", "match__note", `Bye → ${match.winner ? match.winner.name : "next round"}`));
+    else if (match.status === "completed") { const s = scoreText(match.score); if (s) card.append(node("p", "match__note", `Score ${s}`)); }
 
-    const head = node("div", "match__head");
-    head.append(node("span", "match__round", `R${match.round}`));
-    head.append(
-      node(
-        "span",
-        `pill pill--${match.status}`,
-        STATUS_LABELS[match.status] || match.status
-      )
-    );
-    card.append(head);
-
-    card.append(slotRow(match, match.player1, 1));
-    card.append(slotRow(match, match.player2, 2));
-
-    if (match.is_bye) {
-      const winner = match.winner ? match.winner.name : "next round";
-      card.append(node("p", "match__note", `Bye → ${winner}`));
-    } else if (match.status === "completed") {
-      const score = scoreText(match.score);
-      if (score) card.append(node("p", "match__note", `Score ${score}`));
+    if ((state.userRole === 'admin' || state.userRole === 'coworker') && !match.is_bye && match.status !== 'completed' && match.player1 && match.player2) {
+      card.style.cursor = "pointer";
+      card.style.border = "1px solid var(--accent)";
+      card.title = "Click to record score";
+      card.addEventListener("click", () => promptForScore(match));
     }
 
     return card;
   }
 
   function slotRow(match, player, slot) {
-    const row = node("div", "slot");
-    if (!player) {
-      row.classList.add("slot--empty");
-      row.append(node("span", "slot__name", "TBD"));
-      return row;
-    }
-
+    const row = node("div", "slot"); if (!player) { row.classList.add("slot--empty"); row.append(node("span", "slot__name", "TBD")); return row; }
     const isWinner = Boolean(match.winner && match.winner.id === player.id);
-    if (isWinner) row.classList.add("slot--winner");
-    if (match.status === "completed" && !isWinner) {
-      row.classList.add("slot--loser");
-    }
-
+    if (isWinner) row.classList.add("slot--winner"); if (match.status === "completed" && !isWinner) row.classList.add("slot--loser");
     row.append(node("span", "slot__name", player.name));
-
     const score = slot === 1 ? match.score.player1 : match.score.player2;
-    if (match.status === "completed" && score !== null && score !== undefined) {
-      row.append(node("span", "slot__score", score));
-    }
+    if (match.status === "completed" && score !== null && score !== undefined) row.append(node("span", "slot__score", score));
     return row;
   }
 
-  /* ------------------------------------------------------------------ */
-  /* Wiring                                                              */
-  /* ------------------------------------------------------------------ */
+  function promptForScore(match) {
+    askPrompt(`Enter score for ${match.player1.name}:`, (score1Str) => {
+      const s1 = parseInt(score1Str, 10);
+      if (isNaN(s1)) return alert("Invalid score!");
+
+      askPrompt(`Enter score for ${match.player2.name}:`, async (score2Str) => {
+        const s2 = parseInt(score2Str, 10);
+        if (isNaN(s2)) return alert("Invalid score!");
+
+        let winner_id = null, loser_id = null;
+        if (s1 > s2) { winner_id = match.player1.id; loser_id = match.player2.id; }
+        else if (s2 > s1) { winner_id = match.player2.id; loser_id = match.player1.id; }
+        else return alert("Ties are not allowed!");
+
+        try {
+          await fetchJson(`/api/matches/${match.id}`, {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ score_player1: s1, score_player2: s2, winner_id, loser_id })
+          });
+          await loadDashboard({ manual: true });
+        } catch (err) { alert(`Error: ${err.message}`); }
+      });
+    });
+  }
+
+  function askConfirm(message, callback) { if (tg && tg.showConfirm) { tg.showConfirm(message, callback); } else { callback(confirm(message)); } }
+  function askPrompt(message, callback) {
+    if (tg && tg.showPopup) { const val = prompt(message); if(val) callback(val); } else { const val = prompt(message); if (val) callback(val); }
+  }
+
   function bindEvents() {
-    dom.systemSelect.addEventListener("change", (event) => {
-      selectSystem(event.target.value);
+    dom.systemSelect.addEventListener("change", (e) => selectSystem(e.target.value));
+    dom.refreshButton.addEventListener("click", () => loadDashboard({ manual: true }));
+    dom.themeButton.addEventListener("click", () => { const n = document.documentElement.dataset.theme === "dark" ? "light" : "dark"; storeTheme(n); applyTheme(n); });
+
+    document.getElementById('btn-create-tournament')?.addEventListener('click', () => {
+      askPrompt("Enter tournament name:", async (name) => {
+        try { await fetchJson('/api/systems', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) }); await loadSystems(); } catch (err) { alert(`Error: ${err.message}`); }
+      });
     });
 
-    dom.refreshButton.addEventListener("click", () => {
-      loadDashboard({ manual: true });
+    document.getElementById('btn-delete-tournament')?.addEventListener('click', () => {
+      if (!state.currentId) return alert("Select a tournament first!");
+      askConfirm("Delete this tournament permanently?", async (ok) => {
+        if (!ok) return;
+        try { await fetchJson(`/api/systems/${state.currentId}`, { method: 'DELETE' }); await loadSystems(); } catch (err) { alert(`Error: ${err.message}`); }
+      });
     });
 
-    dom.themeButton.addEventListener("click", () => {
-      const next =
-        document.documentElement.dataset.theme === "dark" ? "light" : "dark";
-      storeTheme(next);
-      applyTheme(next);
+    document.getElementById('btn-add-player')?.addEventListener('click', () => {
+      if (!state.currentId) return alert("Select a tournament first!");
+      askPrompt("Enter player's name:", async (name) => {
+        try { await fetchJson(`/api/systems/${state.currentId}/players`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) }); await loadDashboard({ manual: true }); } catch (err) { alert(`Error: ${err.message}`); }
+      });
     });
 
-    document.addEventListener("visibilitychange", () => {
-      if (!document.hidden) loadDashboard({ silent: true });
+    document.getElementById('btn-start-bracket')?.addEventListener('click', () => {
+      if (!state.currentId) return alert("Select a tournament first!");
+      askConfirm("Start the bracket? Registration will be closed.", async (ok) => {
+        if (!ok) return;
+        try { await fetchJson(`/api/systems/${state.currentId}/start`, { method: 'POST' }); await loadDashboard({ manual: true }); } catch (err) { alert(`Error: ${err.message}`); }
+      });
     });
 
-    window.addEventListener("online", () => {
-      loadDashboard({ silent: true });
+    document.getElementById('promote-btn')?.addEventListener('click', () => {
+      askPrompt("Enter Telegram ID to promote:", async (tgId) => {
+        try { await fetchJson('/api/roles/promote', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ telegram_id: Number(tgId), new_role: 'coworker' }) }); alert("Promoted!"); } catch (err) { alert(`Error: ${err.message}`); }
+      });
     });
   }
 
-  async function bootstrap() {
-    applyTheme(initialTheme());
-    setupTelegram();
-    bindEvents();
-    configureRefresh();
-    await loadSystems();
-    scheduleRefresh();
-  }
-
+  async function bootstrap() { applyTheme(initialTheme()); setupTelegram(); bindEvents(); configureRefresh(); await loadSystems(); scheduleRefresh(); }
   bootstrap();
 })();

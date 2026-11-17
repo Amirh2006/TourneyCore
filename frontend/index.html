@@ -2,21 +2,15 @@
 <html lang="en" data-theme="dark">
   <head>
     <meta charset="utf-8" />
-    <meta
-      name="viewport"
-      content="width=device-width, initial-scale=1, viewport-fit=cover"
-    />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="color-scheme" content="dark light" />
-    <meta
-      name="description"
-      content="Live double-elimination bracket for TourneyCore tournaments."
-    />
-    <!-- Worker API origin when the mini-app is hosted on another domain. -->
-    <meta name="tourneycore-api" content="https://tourneycore.amir-h-porsharifi.workers.dev" />    <title>TourneyCore — Live Bracket</title>
+    <meta name="description" content="Live double-elimination bracket for TourneyCore tournaments." />
+    <meta name="tourneycore-api" content="https://tourneycore.amir-h-porsharifi.workers.dev" />
+    <title>TourneyCore — Live Bracket</title>
     <link rel="icon" href="favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="styles.css" />
     <script src="https://telegram.org/js/telegram-web-app.js" defer></script>
-    <script src="app.js" defer></script>
+    <script src="app.js?v=5" defer></script>
   </head>
   <body>
     <header class="topbar">
@@ -29,24 +23,8 @@
           <span class="sr-only">Tournament</span>
           <select id="system-select"></select>
         </label>
-        <button
-          id="refresh-button"
-          class="icon-button"
-          type="button"
-          title="Refresh now"
-          aria-label="Refresh now"
-        >
-          ⟳
-        </button>
-        <button
-          id="theme-button"
-          class="icon-button"
-          type="button"
-          title="Toggle theme"
-          aria-label="Toggle theme"
-        >
-          🌙
-        </button>
+        <button id="refresh-button" class="icon-button" type="button" title="Refresh now">⟳</button>
+        <button id="theme-button" class="icon-button" type="button" title="Toggle theme">🌙</button>
       </div>
     </header>
 
@@ -60,6 +38,31 @@
           <p class="hero__description" id="hero-description"></p>
         </div>
         <div class="stats" id="stats"></div>
+      </section>
+
+      <!-- 🛡️ داشبورد ادمین (همه دکمه‌ها شناسه دارند) -->
+      <section class="panel" id="admin-panel" style="border-color: var(--accent); background: var(--accent-soft);" hidden>
+        <div class="panel__head">
+          <h2 style="color: var(--accent-strong);">🛠️ Admin Dashboard</h2>
+        </div>
+        <div style="padding: 16px 20px; display: flex; gap: 10px; flex-wrap: wrap;">
+          <button id="btn-create-tournament" class="icon-button" style="width: auto; padding: 0 15px; border-radius: 8px;">➕ Create</button>
+          <button id="btn-add-player" class="icon-button" style="width: auto; padding: 0 15px; border-radius: 8px;">👤 Add Player</button>
+          <button id="btn-start-bracket" class="icon-button" style="width: auto; padding: 0 15px; border-radius: 8px;">🏆 Start</button>
+          <button id="promote-btn" class="icon-button" style="width: auto; padding: 0 15px; border-radius: 8px; border-color: var(--win); color: var(--win);" hidden>🤝 Add Coworker</button>
+          <button id="btn-delete-tournament" class="icon-button" style="width: auto; padding: 0 15px; border-radius: 8px; border-color: #ff4444; color: #ff4444;">🗑️ Delete</button>
+        </div>
+      </section>
+
+      <!-- 🎮 داشبورد بازیکنان -->
+      <section class="panel" id="player-panel" hidden>
+        <div class="panel__head">
+          <h2>Your Next Match</h2>
+          <span class="pill pill--ready">Ready</span>
+        </div>
+        <div style="padding: 16px 20px;">
+          <p style="color: var(--muted); font-size: 0.9rem;">Wait for the bracket to update...</p>
+        </div>
       </section>
 
       <section class="champion" id="champion" hidden>
@@ -77,9 +80,7 @@
         </div>
         <div class="table-wrap">
           <table class="standings">
-            <caption class="sr-only">
-              Standings ordered by losses, then wins
-            </caption>
+            <caption class="sr-only">Standings ordered by losses, then wins</caption>
             <thead>
               <tr>
                 <th scope="col">#</th>
@@ -96,15 +97,14 @@
       <section class="brackets" id="brackets"></section>
 
       <p class="empty" id="empty-state" hidden>
-        No tournaments yet. Create one with the admin CLI:
-        <code>python -m cli.admin init "Friday Cup"</code>
+        No tournaments yet. Click on the "Create" button in the Admin Dashboard to start.
       </p>
     </main>
 
     <footer class="footer">
       <span id="footer-status">Loading…</span>
       <span class="footer__dot" aria-hidden="true">•</span>
-      <span>Read-only live view</span>
+      <span>Live view</span>
     </footer>
 
     <noscript>

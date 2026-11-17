@@ -22,7 +22,11 @@ import { listMatches, listPlayers } from '../services/queries';
 import type { PlayerRow } from '../types';
 
 export const webhookRoutes = new Hono<{ Bindings: Env }>();
-
+webhookRoutes.onError((err, c) => {
+  console.error("🔥 FATAL SERVER ERROR:", err.name, err.message, err.stack);
+  // برگرداندن ok: true باعث می‌شود تلگرام پیام‌های گیرکرده در صف را رها کند
+  return c.json({ ok: true });
+});
 /**
  * `POST /webhook` — the only Telegram entry point.
  *

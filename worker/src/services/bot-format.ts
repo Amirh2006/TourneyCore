@@ -109,8 +109,7 @@ export function formatBracket(
     const group = visible
       .filter((match) => match.bracket === side)
       .sort(
-        (left, right) =>
-          left.round - right.round || left.position - right.position,
+        (left, right) => left.round - right.round || left.position - right.position,
       );
     if (group.length === 0) {
       continue;
@@ -168,8 +167,7 @@ export function findNextMatch(
 
   const ordered = [...candidates].sort(
     (left, right) =>
-      (BRACKET_ORDER[left.bracket] ?? 99) -
-        (BRACKET_ORDER[right.bracket] ?? 99) ||
+      (BRACKET_ORDER[left.bracket] ?? 99) - (BRACKET_ORDER[right.bracket] ?? 99) ||
       left.round - right.round ||
       left.position - right.position,
   );
