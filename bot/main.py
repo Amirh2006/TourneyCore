@@ -37,7 +37,7 @@ async def run(settings: BotSettings) -> None:
     storage = StorageManager(data_dir=settings.data_dir)
     await storage.initialize()
 
-    # اعمال پراکسی کلودفلر برای اتصال به تلگرام (رفع فیلترینگ)
+    # Cloudflare proxy setup for Telegram connection (bypassing restrictions)
     custom_session = AiohttpSession(
         api=TelegramAPIServer.from_base("https://tg-proxy.amir-h-porsharifi.workers.dev")
     )

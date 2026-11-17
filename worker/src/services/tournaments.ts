@@ -128,7 +128,7 @@ export async function startBracket(env: Env, systemId: string): Promise<void> {
   if (mError) throw new ApiError(500, 'database_error', `Failed to generate matches: ${mError.message}`);
 }
 
-// 🚀 اینجا مشکل ارتقای همکار برای همیشه حل شد
+// 🚀 This coworker upgrade issue is permanently resolved here
 export async function promoteCoworker(env: Env, telegramId: number): Promise<void> {
   const supabase = getSupabase(env);
   const { error } = await supabase

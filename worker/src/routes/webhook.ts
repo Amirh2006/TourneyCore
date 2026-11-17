@@ -24,7 +24,7 @@ import type { PlayerRow } from '../types';
 export const webhookRoutes = new Hono<{ Bindings: Env }>();
 webhookRoutes.onError((err, c) => {
   console.error("🔥 FATAL SERVER ERROR:", err.name, err.message, err.stack);
-  // برگرداندن ok: true باعث می‌شود تلگرام پیام‌های گیرکرده در صف را رها کند
+  // Returning ok: true causes Telegram to discard queued processed messages
   return c.json({ ok: true });
 });
 /**

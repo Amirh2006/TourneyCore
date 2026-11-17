@@ -4,7 +4,7 @@ import type { Env } from '../env';
 
 const ADMIN_IDS = [8725080670, 999999];
 
-// 🚀 تعریف دقیق تایپ‌ها برای رفع خطاهای Typescript در Hono
+// 🚀 Precise type definitions for raising TypeScript errors in Hono
 type AppContext = {
   Bindings: Env;
   Variables: {
@@ -15,7 +15,7 @@ type AppContext = {
 
 export async function authMiddleware(c: Context<AppContext>, next: Next) {
   const initData = c.req.header('X-Telegram-Init-Data');
-  let telegramId: number | null = null; // تعیین دقیق نوع متغیر
+  let telegramId: number | null = null; // Exact type of the variable
 
   if (initData) {
     try {
