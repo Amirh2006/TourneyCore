@@ -21,6 +21,15 @@
     brackets: document.getElementById("brackets"), empty: document.getElementById("empty-state"), footerStatus: document.getElementById("footer-status"),
   };
 
+  // Add the showMatchInfo to global scope so inline onclick can find it
+  window.showMatchInfo = function(matchId) {
+      if(tg && tg.showAlert) {
+          tg.showAlert(`Match ID: ${matchId}`);
+      } else {
+          alert(`Match ID: ${matchId}`);
+      }
+  };
+
   function node(tag, className, text) { const el = document.createElement(tag); if (className) el.className = className; if (text !== undefined && text !== null) el.textContent = String(text); return el; }
   function show(element, visible) { if (element) element.hidden = !visible; }
   function capitalize(value) { return value ? value.charAt(0).toUpperCase() + value.slice(1) : ""; }
@@ -149,40 +158,64 @@
     const rounds = new Map(); matches.forEach(m => { if (!rounds.has(m.round)) rounds.set(m.round, []); rounds.get(m.round).push(m); });
     const grid = node("div", "rounds");
     [...rounds.keys()].sort((a,b)=>a-b).forEach(r => {
-      const col = node("div", "round"); col.append(node("h3", "round__title", `Round ${r}`));
-      const list = node("div", "round__matches"); rounds.get(r).forEach(m => list.append(matchCard(m)));
-      col.append(list); grid.append(col);
+
+      const col = node("div", "round");
+
+      const roundTitle = node("div", "round__title", `Round ${r} - Playoffs`);
+      col.append(roundTitle);
+
+      const list = node("div", "round__matches");
+
+      rounds.get(r).forEach(match => {
+        const wrapper = document.createElement('div');
+
+        let matchHtml = `
+          <div class="match ${match.status === 'active' ? 'match--active' : ''}">
+            
+            <!-- دکمه i در سمت راست -->
+            <div class="match__info" onclick="showMatchInfo('${match.id}')">i</div>
+
+            <!-- بازیکن اول -->
+            <div class="slot ${match.winner && match.winner.id === (match.player1 ? match.player1.id : null) ? 'slot--winner' : ''}">
+              <div class="slot__logo">
+                <img src="https://ui-avatars.com/api/?name=${match.player1 ? match.player1.name : '?'}&background=random&color=fff" alt="logo">
+              </div>
+              <div class="slot__name">${match.player1 ? match.player1.name : 'TBD'}</div>
+              <div class="slot__score">${match.score ? match.score.player1 : ''}</div>
+            </div>
+
+            <!-- بازیکن دوم -->
+            <div class="slot ${match.winner && match.winner.id === (match.player2 ? match.player2.id : null) ? 'slot--winner' : ''}">
+              <div class="slot__logo">
+                <img src="https://ui-avatars.com/api/?name=${match.player2 ? match.player2.name : '?'}&background=random&color=fff" alt="logo">
+              </div>
+              <div class="slot__name">${match.player2 ? match.player2.name : 'TBD'}</div>
+              <div class="slot__score">${match.score ? match.score.player2 : ''}</div>
+            </div>
+
+          </div>
+        `;
+
+        wrapper.innerHTML = matchHtml;
+        const card = wrapper.firstElementChild;
+
+        if ((state.userRole === 'admin' || state.userRole === 'coworker') && !match.is_bye && match.status !== 'completed' && match.player1 && match.player2) {
+          card.style.cursor = "pointer";
+          card.style.border = "1px solid var(--accent)";
+          card.title = "Click to record score";
+          card.addEventListener("click", (e) => {
+              if (e.target.classList.contains('match__info')) return;
+              promptForScore(match);
+          });
+        }
+
+        list.append(card);
+      });
+
+      col.append(list);
+      grid.append(col);
     });
     section.append(grid); return section;
-  }
-
-  function scoreText(score) { if (!score) return ""; const f = score.player1, s = score.player2; return (!f && !s) ? "" : `${f||"–"}–${s||"–"}`; }
-
-  function matchCard(match) {
-    const card = node("article", `match match--${match.status}`); if (match.is_bye) card.classList.add("match--bye");
-    const head = node("div", "match__head"); head.append(node("span", "match__round", `R${match.round}`), node("span", `pill pill--${match.status}`, STATUS_LABELS[match.status] || match.status));
-    card.append(head, slotRow(match, match.player1, 1), slotRow(match, match.player2, 2));
-    if (match.is_bye) card.append(node("p", "match__note", `Bye → ${match.winner ? match.winner.name : "next round"}`));
-    else if (match.status === "completed") { const s = scoreText(match.score); if (s) card.append(node("p", "match__note", `Score ${s}`)); }
-
-    if ((state.userRole === 'admin' || state.userRole === 'coworker') && !match.is_bye && match.status !== 'completed' && match.player1 && match.player2) {
-      card.style.cursor = "pointer";
-      card.style.border = "1px solid var(--accent)";
-      card.title = "Click to record score";
-      card.addEventListener("click", () => promptForScore(match));
-    }
-
-    return card;
-  }
-
-  function slotRow(match, player, slot) {
-    const row = node("div", "slot"); if (!player) { row.classList.add("slot--empty"); row.append(node("span", "slot__name", "TBD")); return row; }
-    const isWinner = Boolean(match.winner && match.winner.id === player.id);
-    if (isWinner) row.classList.add("slot--winner"); if (match.status === "completed" && !isWinner) row.classList.add("slot--loser");
-    row.append(node("span", "slot__name", player.name));
-    const score = slot === 1 ? match.score.player1 : match.score.player2;
-    if (match.status === "completed" && score !== null && score !== undefined) row.append(node("span", "slot__score", score));
-    return row;
   }
 
   function promptForScore(match) {
