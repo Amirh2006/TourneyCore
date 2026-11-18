@@ -362,3 +362,84 @@ body {
 .pill { display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--accent); background: var(--accent-soft); color: var(--text); font-size: 0.7rem; font-weight: 600; text-transform: capitalize; }
 .footer { display: flex; justify-content: center; gap: 8px; padding: 18px 20px 30px; color: var(--muted); font-size: 0.8rem; }
 .empty { padding: 28px; border-radius: 18px; border: 1px dashed var(--accent); color: var(--text); text-align: center; }
+
+/* Broadcast Banner Styles */
+.broadcast-banner {
+  background: var(--accent-soft);
+  border: 1px solid var(--accent);
+  color: var(--text);
+  padding: 14px 20px;
+  border-radius: 12px;
+  margin-bottom: 18px;
+  font-weight: 600;
+  font-size: 1.05rem;
+  box-shadow: var(--shadow);
+  display: none;
+  animation: pulse-border 2s infinite;
+  text-align: center;
+}
+
+@keyframes pulse-border {
+  0% { box-shadow: 0 0 0 0 var(--accent-soft); }
+  70% { box-shadow: 0 0 0 10px rgba(0,0,0,0); }
+  100% { box-shadow: 0 0 0 0 rgba(0,0,0,0); }
+}
+/* Broadcast Banner Styles (With History Log) */
+.broadcast-banner {
+  background: var(--surface-2);
+  border: 1px solid var(--accent);
+  color: var(--text);
+  padding: 16px 20px;
+  border-radius: 12px;
+  margin-bottom: 18px;
+  box-shadow: var(--shadow);
+  display: none;
+  animation: pulse-border 2s infinite;
+  text-align: right;
+  direction: rtl;
+}
+
+.broadcast-title {
+  font-weight: 700;
+  font-size: 1.1rem;
+  margin-bottom: 12px;
+  color: var(--accent);
+  text-align: center;
+  border-bottom: 1px dashed var(--accent-soft);
+  padding-bottom: 8px;
+}
+
+.broadcast-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 250px;
+  overflow-y: auto;
+  padding-left: 5px;
+}
+
+/* Scrollbar Customization for Announcements */
+.broadcast-list::-webkit-scrollbar { width: 6px; }
+.broadcast-list::-webkit-scrollbar-track { background: transparent; }
+.broadcast-list::-webkit-scrollbar-thumb { background: var(--accent); border-radius: 10px; }
+
+.broadcast-item {
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-3);
+  padding: 10px 14px;
+  border-radius: 8px;
+  border-right: 3px solid var(--accent);
+}
+
+.broadcast-time {
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.broadcast-text {
+  font-size: 0.95rem;
+  font-weight: 500;
+  white-space: pre-wrap;
+}

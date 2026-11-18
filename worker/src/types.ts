@@ -14,6 +14,7 @@ export interface SystemRow {
   id: string;
   name: string;
   description: string | null;
+  announcement: string | null; // 📢 افزوده شده برای پیام همگانی
   max_players: number;
   status: string;
   registration_open: boolean;
@@ -128,6 +129,7 @@ export interface DashboardPayload {
     id: string;
     name: string;
     description: string;
+    announcement: string | null; // 📢 افزوده شده برای نمایش در فرانت‌اند
     status: string;
     registration_open: boolean;
     max_players: number;

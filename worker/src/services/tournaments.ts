@@ -87,7 +87,6 @@ export async function deleteSystem(env: Env, systemId: string): Promise<void> {
   if (error) throw new ApiError(500, 'database_error', `Failed to delete tournament: ${error.message}`);
 }
 
-// 👤 تابع addPlayer آپدیت شد تا telegram_id را هم دریافت و ذخیره کند
 export async function addPlayer(env: Env, systemId: string, name: string, telegram_id?: number | null): Promise<void> {
   const supabase = getSupabase(env);
   if (!name || name.trim() === '') throw new ApiError(400, 'invalid_input', 'Player name is required');
@@ -129,7 +128,6 @@ export async function startBracket(env: Env, systemId: string): Promise<void> {
   if (mError) throw new ApiError(500, 'database_error', `Failed to generate matches: ${mError.message}`);
 }
 
-// 🚀 This coworker upgrade issue is permanently resolved here
 export async function promoteCoworker(env: Env, telegramId: number): Promise<void> {
   const supabase = getSupabase(env);
   const { error } = await supabase
@@ -280,7 +278,18 @@ export async function buildDashboard(env: Env, systemId: string): Promise<Dashbo
 
   return {
     schema: API_SCHEMA_VERSION, generated_at: new Date().toISOString(),
-    system: { id: system.id, name: system.name, description: system.description ?? '', status: system.status, registration_open: system.registration_open, max_players: system.max_players, player_count: players.length, created_at: system.created_at, updated_at: system.updated_at },
+    system: {
+      id: system.id,
+      name: system.name,
+      description: system.description ?? '',
+      announcement: system.announcement ?? null, // 📢 خطای تایپ برطرف شد
+      status: system.status,
+      registration_open: system.registration_open,
+      max_players: system.max_players,
+      player_count: players.length,
+      created_at: system.created_at,
+      updated_at: system.updated_at
+    },
     champion: playerRef(champion), players: orderPlayers(players).map(playerSummary), brackets,
     counts: { players: players.length, matches: matches.length, completed: matches.filter((match) => match.status === 'completed').length, ready: matches.filter((match) => match.status === 'ready').length, active: matches.filter((match) => match.status === 'active').length, byes: matches.filter((match) => match.is_bye).length, remaining: alive.length },
   };

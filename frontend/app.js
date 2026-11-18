@@ -26,21 +26,17 @@
       else alert(`Match ID: ${matchId}`);
   };
 
-  // 🔔 گرفتن پیام تایپ شده و ارسال به بک‌اند
+  // Single match notification
   window.promptForNotification = function(matchId) {
-      askPrompt("متن پیام خود را برای بازیکنان این مسابقه بنویسید:\n(مثال: لطفاً ۵ دقیقه دیگر در سالن حاضر باشید)", async (message) => {
+      askPrompt("متن پیام خود را برای بازیکنان این مسابقه بنویسید:", async (message) => {
           if (!message) return;
           try {
               await fetchJson(`/api/matches/${matchId}/notify`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ message: message })
+                  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: message })
               });
-              if(tg && tg.showAlert) tg.showAlert("پیام با موفقیت ارسال شد!");
-              else alert("پیام با موفقیت ارسال شد!");
+              if(tg && tg.showAlert) tg.showAlert("پیام با موفقیت ارسال شد!"); else alert("پیام با موفقیت ارسال شد!");
           } catch (err) {
-              if(tg && tg.showAlert) tg.showAlert(`خطا در ارسال پیام: ${err.message}`);
-              else alert(`خطا در ارسال پیام: ${err.message}`);
+              if(tg && tg.showAlert) tg.showAlert(`خطا: ${err.message}`); else alert(`خطا: ${err.message}`);
           }
       });
   };
@@ -128,6 +124,56 @@
 
   function renderHero(data) {
     const sys = data.system || {}, counts = data.counts || {}, role = data.userRole || 'guest';
+
+    // Banner display logic with history parsing
+    let banner = document.getElementById('broadcast-banner');
+    if (!banner) {
+      banner = document.createElement('div');
+      banner.id = 'broadcast-banner';
+      banner.className = 'broadcast-banner';
+      dom.hero.parentNode.insertBefore(banner, dom.hero);
+    }
+
+    banner.innerHTML = '';
+
+    let announcements = [];
+    try {
+      if (sys.announcement) {
+        announcements = JSON.parse(sys.announcement);
+        if (!Array.isArray(announcements)) announcements = [{ text: sys.announcement, date: new Date().toISOString() }];
+      }
+    } catch(e) {
+      if (sys.announcement) announcements = [{ text: sys.announcement, date: new Date().toISOString() }];
+    }
+
+    if (announcements.length > 0) {
+      const title = document.createElement('div');
+      title.className = 'broadcast-title';
+      title.innerHTML = `📢 <strong>اطلاعیه‌های تورنمنت</strong>`;
+      banner.appendChild(title);
+
+      const list = document.createElement('div');
+      list.className = 'broadcast-list';
+
+      announcements.forEach(a => {
+        const item = document.createElement('div');
+        item.className = 'broadcast-item';
+
+        // Convert Gregorian date to Jalali (fa-IR) and extract time
+        const dateObj = new Date(a.date);
+        const dateStr = dateObj.toLocaleDateString('fa-IR');
+        const timeStr = dateObj.toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' });
+
+        item.innerHTML = `<span class="broadcast-time">${dateStr} - ساعت ${timeStr}</span><span class="broadcast-text">${a.text}</span>`;
+        list.appendChild(item);
+      });
+
+      banner.appendChild(list);
+      banner.style.display = 'block';
+    } else {
+      banner.style.display = 'none';
+    }
+
     dom.heroTitle.textContent = sys.name || "Tournament"; dom.heroDescription.textContent = sys.description || "";
     show(dom.heroDescription, Boolean(sys.description));
     dom.heroStatus.textContent = sys.registration_open ? `${STATUS_ICONS[sys.status] || "⚪"} ${capitalize(sys.status)} · registration open` : `${STATUS_ICONS[sys.status] || "⚪"} ${capitalize(sys.status)}`;
@@ -173,62 +219,42 @@
     const rounds = new Map(); matches.forEach(m => { if (!rounds.has(m.round)) rounds.set(m.round, []); rounds.get(m.round).push(m); });
     const grid = node("div", "rounds");
     [...rounds.keys()].sort((a,b)=>a-b).forEach(r => {
-
       const col = node("div", "round");
       const roundTitle = node("div", "round__title", `Round ${r} - Playoffs`);
       col.append(roundTitle);
-
       const list = node("div", "round__matches");
 
       rounds.get(r).forEach(match => {
         const wrapper = document.createElement('div');
-
-        // 🔔 افزودن دکمه زنگوله به ساختار HTML کارت
         let matchHtml = `
           <div class="match ${match.status === 'active' ? 'match--active' : ''}">
-            
-            <!-- دکمه‌های کنار کارت -->
             <div class="match__info" onclick="showMatchInfo('${match.id}')">i</div>
             ${(state.userRole === 'admin' || state.userRole === 'coworker') ? `<div class="match__notify" onclick="promptForNotification('${match.id}')">🔔</div>` : ''}
-
-            <!-- بازیکن اول -->
             <div class="slot ${match.winner && match.winner.id === (match.player1 ? match.player1.id : null) ? 'slot--winner' : ''}">
-              <div class="slot__logo">
-                <img src="https://ui-avatars.com/api/?name=${match.player1 ? match.player1.name : '?'}&background=random&color=fff" alt="logo">
-              </div>
+              <div class="slot__logo"><img src="https://ui-avatars.com/api/?name=${match.player1 ? match.player1.name : '?'}&background=random&color=fff" alt="logo"></div>
               <div class="slot__name">${match.player1 ? match.player1.name : 'TBD'}</div>
               <div class="slot__score">${match.score ? match.score.player1 : ''}</div>
             </div>
-
-            <!-- بازیکن دوم -->
             <div class="slot ${match.winner && match.winner.id === (match.player2 ? match.player2.id : null) ? 'slot--winner' : ''}">
-              <div class="slot__logo">
-                <img src="https://ui-avatars.com/api/?name=${match.player2 ? match.player2.name : '?'}&background=random&color=fff" alt="logo">
-              </div>
+              <div class="slot__logo"><img src="https://ui-avatars.com/api/?name=${match.player2 ? match.player2.name : '?'}&background=random&color=fff" alt="logo"></div>
               <div class="slot__name">${match.player2 ? match.player2.name : 'TBD'}</div>
               <div class="slot__score">${match.score ? match.score.player2 : ''}</div>
             </div>
-
           </div>
         `;
-
         wrapper.innerHTML = matchHtml;
         const card = wrapper.firstElementChild;
-
         if ((state.userRole === 'admin' || state.userRole === 'coworker') && !match.is_bye && match.status !== 'completed' && match.player1 && match.player2) {
           card.style.cursor = "pointer";
           card.style.border = "1px solid var(--accent)";
           card.title = "Click to record score";
           card.addEventListener("click", (e) => {
-              // توقف کلیک اگر روی دکمه‌های کناری کلیک شده بود
               if (e.target.classList.contains('match__info') || e.target.classList.contains('match__notify')) return;
               promptForScore(match);
           });
         }
-
         list.append(card);
       });
-
       col.append(list);
       grid.append(col);
     });
@@ -239,11 +265,9 @@
     askPrompt(`Enter score for ${match.player1.name}:`, (score1Str) => {
       const s1 = parseInt(score1Str, 10);
       if (isNaN(s1)) return alert("Invalid score!");
-
       askPrompt(`Enter score for ${match.player2.name}:`, async (score2Str) => {
         const s2 = parseInt(score2Str, 10);
         if (isNaN(s2)) return alert("Invalid score!");
-
         let winner_id = null, loser_id = null;
         if (s1 > s2) { winner_id = match.player1.id; loser_id = match.player2.id; }
         else if (s2 > s1) { winner_id = match.player2.id; loser_id = match.player1.id; }
@@ -270,6 +294,37 @@
     dom.refreshButton.addEventListener("click", () => loadDashboard({ manual: true }));
     dom.themeButton.addEventListener("click", () => { const n = document.documentElement.dataset.theme === "dark" ? "light" : "dark"; storeTheme(n); applyTheme(n); });
 
+    // Broadcast banner button in admin panel
+    const adminPanel = document.getElementById('admin-panel');
+    if (adminPanel && !document.getElementById('btn-broadcast')) {
+      const broadcastBtn = document.createElement('button');
+      broadcastBtn.id = 'btn-broadcast';
+      broadcastBtn.className = 'pill';
+      broadcastBtn.style.cursor = 'pointer';
+      broadcastBtn.style.background = 'var(--accent)';
+      broadcastBtn.style.color = 'var(--bg)';
+      broadcastBtn.style.marginLeft = '8px';
+      broadcastBtn.textContent = '📢 ثبت اطلاعیه';
+      adminPanel.appendChild(broadcastBtn);
+
+      broadcastBtn.addEventListener('click', () => {
+        if (!state.currentId) return alert("Select a tournament first!");
+        askPrompt("متن اطلاعیه را بنویسید تا در بالای مینی‌اپ نمایش داده شود:\n(برای حذف تمام اطلاعیه‌ها، این کادر را کاملاً خالی بگذارید)", async (message) => {
+          try {
+            await fetchJson(`/api/systems/${state.currentId}/broadcast`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ message: message }) // Sends null if empty
+            });
+            await loadDashboard({ manual: true });
+          } catch (err) {
+            if (tg && tg.showAlert) tg.showAlert(`خطا: ${err.message}`);
+            else alert(`خطا: ${err.message}`);
+          }
+        });
+      });
+    }
+
     document.getElementById('btn-create-tournament')?.addEventListener('click', () => {
       askPrompt("Enter tournament name:", async (name) => {
         try { await fetchJson('/api/systems', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) }); await loadSystems(); } catch (err) { alert(`Error: ${err.message}`); }
@@ -284,7 +339,7 @@
       });
     });
 
-    // 👤 تابع ثبت بازیکن آپدیت شد تا آیدی تلگرام را هم دریافت کند
+    // Add player (includes telegram ID)
     document.getElementById('btn-add-player')?.addEventListener('click', () => {
       if (!state.currentId) return alert("Select a tournament first!");
       askPrompt("اسم بازیکن را وارد کنید:", (name) => {
@@ -292,8 +347,7 @@
         askPrompt("آیدی عددی تلگرام بازیکن را وارد کنید (اگر ندارد خالی بگذارید):", async (telegramId) => {
           try {
             await fetchJson(`/api/systems/${state.currentId}/players`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ name: name, telegram_id: telegramId ? Number(telegramId) : null })
             });
             await loadDashboard({ manual: true });
