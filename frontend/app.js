@@ -21,13 +21,28 @@
     brackets: document.getElementById("brackets"), empty: document.getElementById("empty-state"), footerStatus: document.getElementById("footer-status"),
   };
 
-  // Add the showMatchInfo to global scope so inline onclick can find it
   window.showMatchInfo = function(matchId) {
-      if(tg && tg.showAlert) {
-          tg.showAlert(`Match ID: ${matchId}`);
-      } else {
-          alert(`Match ID: ${matchId}`);
-      }
+      if(tg && tg.showAlert) tg.showAlert(`Match ID: ${matchId}`);
+      else alert(`Match ID: ${matchId}`);
+  };
+
+  // 🔔 تابع جدید برای گرفتن پیام تایپ شده و ارسال به بک‌اند
+  window.promptForNotification = function(matchId) {
+      askPrompt("متن پیام خود را برای بازیکنان این مسابقه بنویسید:\n(مثال: لطفاً ۵ دقیقه دیگر در سالن حاضر باشید)", async (message) => {
+          if (!message) return;
+          try {
+              await fetchJson(`/api/matches/${matchId}/notify`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ message: message })
+              });
+              if(tg && tg.showAlert) tg.showAlert("پیام با موفقیت ارسال شد!");
+              else alert("پیام با موفقیت ارسال شد!");
+          } catch (err) {
+              if(tg && tg.showAlert) tg.showAlert(`خطا در ارسال پیام: ${err.message}`);
+              else alert(`خطا در ارسال پیام: ${err.message}`);
+          }
+      });
   };
 
   function node(tag, className, text) { const el = document.createElement(tag); if (className) el.className = className; if (text !== undefined && text !== null) el.textContent = String(text); return el; }
@@ -160,7 +175,6 @@
     [...rounds.keys()].sort((a,b)=>a-b).forEach(r => {
 
       const col = node("div", "round");
-
       const roundTitle = node("div", "round__title", `Round ${r} - Playoffs`);
       col.append(roundTitle);
 
@@ -169,11 +183,13 @@
       rounds.get(r).forEach(match => {
         const wrapper = document.createElement('div');
 
+        // 🔔 افزودن دکمه زنگوله به ساختار HTML کارت
         let matchHtml = `
           <div class="match ${match.status === 'active' ? 'match--active' : ''}">
             
-            <!-- دکمه i در سمت راست -->
+            <!-- دکمه‌های کنار کارت -->
             <div class="match__info" onclick="showMatchInfo('${match.id}')">i</div>
+            ${(state.userRole === 'admin' || state.userRole === 'coworker') ? `<div class="match__notify" onclick="promptForNotification('${match.id}')">🔔</div>` : ''}
 
             <!-- بازیکن اول -->
             <div class="slot ${match.winner && match.winner.id === (match.player1 ? match.player1.id : null) ? 'slot--winner' : ''}">
@@ -204,7 +220,8 @@
           card.style.border = "1px solid var(--accent)";
           card.title = "Click to record score";
           card.addEventListener("click", (e) => {
-              if (e.target.classList.contains('match__info')) return;
+              // توقف کلیک اگر روی دکمه‌های کناری کلیک شده بود
+              if (e.target.classList.contains('match__info') || e.target.classList.contains('match__notify')) return;
               promptForScore(match);
           });
         }
