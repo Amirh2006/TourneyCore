@@ -26,7 +26,7 @@
       else alert(`Match ID: ${matchId}`);
   };
 
-  // 🔔 تابع جدید برای گرفتن پیام تایپ شده و ارسال به بک‌اند
+  // 🔔 گرفتن پیام تایپ شده و ارسال به بک‌اند
   window.promptForNotification = function(matchId) {
       askPrompt("متن پیام خود را برای بازیکنان این مسابقه بنویسید:\n(مثال: لطفاً ۵ دقیقه دیگر در سالن حاضر باشید)", async (message) => {
           if (!message) return;
@@ -284,10 +284,21 @@
       });
     });
 
+    // 👤 تابع ثبت بازیکن آپدیت شد تا آیدی تلگرام را هم دریافت کند
     document.getElementById('btn-add-player')?.addEventListener('click', () => {
       if (!state.currentId) return alert("Select a tournament first!");
-      askPrompt("Enter player's name:", async (name) => {
-        try { await fetchJson(`/api/systems/${state.currentId}/players`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) }); await loadDashboard({ manual: true }); } catch (err) { alert(`Error: ${err.message}`); }
+      askPrompt("اسم بازیکن را وارد کنید:", (name) => {
+        if (!name) return;
+        askPrompt("آیدی عددی تلگرام بازیکن را وارد کنید (اگر ندارد خالی بگذارید):", async (telegramId) => {
+          try {
+            await fetchJson(`/api/systems/${state.currentId}/players`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name: name, telegram_id: telegramId ? Number(telegramId) : null })
+            });
+            await loadDashboard({ manual: true });
+          } catch (err) { alert(`Error: ${err.message}`); }
+        });
       });
     });
 

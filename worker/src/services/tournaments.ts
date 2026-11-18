@@ -87,14 +87,15 @@ export async function deleteSystem(env: Env, systemId: string): Promise<void> {
   if (error) throw new ApiError(500, 'database_error', `Failed to delete tournament: ${error.message}`);
 }
 
-export async function addPlayer(env: Env, systemId: string, name: string): Promise<void> {
+// 👤 تابع addPlayer آپدیت شد تا telegram_id را هم دریافت و ذخیره کند
+export async function addPlayer(env: Env, systemId: string, name: string, telegram_id?: number | null): Promise<void> {
   const supabase = getSupabase(env);
   if (!name || name.trim() === '') throw new ApiError(400, 'invalid_input', 'Player name is required');
-  const { error } = await supabase.from('players').insert([{ name: name.trim(), system_id: systemId, status: 'registered', role: 'player', wins: 0, losses: 0 }]);
+  const { error } = await supabase.from('players').insert([{ name: name.trim(), system_id: systemId, status: 'registered', role: 'player', wins: 0, losses: 0, telegram_id: telegram_id }]);
   if (error) {
     if (error.code === '23502' && error.message.includes('id')) {
         const randomId = Math.floor(Math.random() * 1000000);
-        await supabase.from('players').insert([{ id: randomId, name: name.trim(), system_id: systemId, status: 'registered', role: 'player', wins: 0, losses: 0 }]);
+        await supabase.from('players').insert([{ id: randomId, name: name.trim(), system_id: systemId, status: 'registered', role: 'player', wins: 0, losses: 0, telegram_id: telegram_id }]);
     } else {
         throw new ApiError(500, 'database_error', `Failed to add player: ${error.message}`);
     }
