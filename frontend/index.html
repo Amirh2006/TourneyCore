@@ -1,16 +1,19 @@
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="fa" dir="rtl" data-theme="dark">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="color-scheme" content="dark light" />
-    <meta name="description" content="Live double-elimination bracket for TourneyCore tournaments." />
+    <meta name="description" content="براکت زنده مسابقات دوحذفی در سیستم TourneyCore" />
     <meta name="tourneycore-api" content="https://tourneycore.amir-h-porsharifi.workers.dev" />
-    <title>TourneyCore — Live Bracket</title>
+    <title>TourneyCore — براکت زنده مسابقات</title>
     <link rel="icon" href="favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="styles.css" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="styles.css?v=2" />
     <script src="https://telegram.org/js/telegram-web-app.js" defer></script>
-    <script src="app.js?v=6" defer></script>
+    <script src="app.js?v=7" defer></script>
   </head>
   <body>
     <header class="topbar">
@@ -20,11 +23,11 @@
       </a>
       <div class="topbar__actions">
         <label class="select">
-          <span class="sr-only">Tournament</span>
+          <span class="sr-only">انتخاب تورنمنت</span>
           <select id="system-select"></select>
         </label>
-        <button id="refresh-button" class="icon-button" type="button" title="Refresh now">⟳</button>
-        <button id="theme-button" class="icon-button" type="button" title="Toggle theme">🌙</button>
+        <button id="refresh-button" class="icon-button" type="button" title="بروزرسانی">⟳</button>
+        <button id="theme-button" class="icon-button" type="button" title="تغییر تم">🌙</button>
       </div>
     </header>
 
@@ -33,60 +36,60 @@
 
       <section class="hero" id="hero" hidden>
         <div class="hero__text">
-          <p class="eyebrow" id="hero-status">Tournament</p>
+          <p class="eyebrow" id="hero-status">تورنمنت</p>
           <h1 id="hero-title">—</h1>
           <p class="hero__description" id="hero-description"></p>
         </div>
         <div class="stats" id="stats"></div>
       </section>
 
-      <!-- 🛡️ Admin Dashboard (all buttons have IDs) -->
+      <!-- Admin Dashboard (all buttons have IDs) -->
       <section class="panel" id="admin-panel" style="border-color: var(--accent); background: var(--accent-soft);" hidden>
         <div class="panel__head">
-          <h2 style="color: var(--accent-strong);">🛠️ Admin Dashboard</h2>
+          <h2 style="color: var(--accent-strong);">🛠️ پنل مدیریت</h2>
         </div>
-        <div style="padding: 16px 20px; display: flex; gap: 10px; flex-wrap: wrap;">
-          <button id="btn-create-tournament" class="icon-button" style="width: auto; padding: 0 15px; border-radius: 8px;">➕ Create</button>
-          <button id="btn-add-player" class="icon-button" style="width: auto; padding: 0 15px; border-radius: 8px;">👤 Add Player</button>
-          <button id="btn-start-bracket" class="icon-button" style="width: auto; padding: 0 15px; border-radius: 8px;">🏆 Start</button>
-          <button id="promote-btn" class="icon-button" style="width: auto; padding: 0 15px; border-radius: 8px; border-color: var(--win); color: var(--win);" hidden>🤝 Add Coworker</button>
-          <button id="btn-delete-tournament" class="icon-button" style="width: auto; padding: 0 15px; border-radius: 8px; border-color: #ff4444; color: #ff4444;">🗑️ Delete</button>
+        <div id="admin-actions" class="admin-actions">
+          <button id="btn-create-tournament" class="icon-button action-btn" type="button">➕ ساخت تورنمنت</button>
+          <button id="btn-add-player" class="icon-button action-btn" type="button">👤 افزودن بازیکن</button>
+          <button id="btn-start-bracket" class="icon-button action-btn" type="button">🏆 شروع براکت</button>
+          <button id="promote-btn" class="icon-button action-btn action-btn--win" type="button" hidden>🤝 افزودن همکار</button>
+          <button id="btn-delete-tournament" class="icon-button action-btn action-btn--danger" type="button">🗑️ حذف تورنمنت</button>
         </div>
       </section>
 
-      <!-- 🎮 Player Dashboard -->
+      <!-- Player Dashboard -->
       <section class="panel" id="player-panel" hidden>
         <div class="panel__head">
-          <h2>Your Next Match</h2>
-          <span class="pill pill--ready">Ready</span>
+          <h2>مسابقه بعدی شما</h2>
+          <span class="pill pill--ready">آماده</span>
         </div>
         <div style="padding: 16px 20px;">
-          <p style="color: var(--muted); font-size: 0.9rem;">Wait for the bracket to update...</p>
+          <p style="color: var(--muted); font-size: 0.9rem; margin: 0;">در انتظار بروزرسانی جدول مسابقات...</p>
         </div>
       </section>
 
       <section class="champion" id="champion" hidden>
         <span class="champion__crown" aria-hidden="true">🏆</span>
         <div>
-          <p class="eyebrow">Champion</p>
+          <p class="eyebrow">قهرمان تورنمنت</p>
           <h2 id="champion-name">—</h2>
         </div>
       </section>
 
       <section class="panel" id="standings-panel" hidden>
         <div class="panel__head">
-          <h2>Standings</h2>
+          <h2>جدول رده‌بندی</h2>
           <span class="panel__hint" id="standings-hint"></span>
         </div>
         <div class="table-wrap">
           <table class="standings">
-            <caption class="sr-only">Standings ordered by losses, then wins</caption>
+            <caption class="sr-only">جدول رده‌بندی بر اساس کمترین باخت و بیشترین برد</caption>
             <thead>
               <tr>
-                <th scope="col">#</th>
-                <th scope="col">Player</th>
-                <th scope="col">W–L</th>
-                <th scope="col">Status</th>
+                <th scope="col">رتبه</th>
+                <th scope="col">بازیکن</th>
+                <th scope="col">برد–باخت</th>
+                <th scope="col">وضعیت</th>
               </tr>
             </thead>
             <tbody id="standings-body"></tbody>
@@ -97,18 +100,18 @@
       <section class="brackets" id="brackets"></section>
 
       <p class="empty" id="empty-state" hidden>
-        No tournaments yet. Click on the "Create" button in the Admin Dashboard to start.
+        هنوز هیچ تورنمنتی ثبت نشده است. برای شروع روی دکمه «ساخت تورنمنت» در پنل مدیریت کلیک کنید.
       </p>
     </main>
 
     <footer class="footer">
-      <span id="footer-status">Loading…</span>
+      <span id="footer-status">در حال بارگذاری…</span>
       <span class="footer__dot" aria-hidden="true">•</span>
-      <span>Live view</span>
+      <span>نمای زنده</span>
     </footer>
 
     <noscript>
-      <p class="alert">The TourneyCore mini-app needs JavaScript enabled.</p>
+      <p class="alert">برای اجرای مینی‌اپ TourneyCore باید جاوااسکریپت مرورگر فعال باشد.</p>
     </noscript>
   </body>
 </html>

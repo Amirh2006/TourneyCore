@@ -3,9 +3,9 @@
 # 🏆 TourneyCore
 
 **A Modern, Framework-Independent Double-Elimination Tournament Manager**  
-*Telegram Bot • Interactive Telegram Mini-App • Admin CLI • Serverless Edge API*
+*Telegram Bot • Interactive RTL Telegram Mini-App • Admin CLI • Serverless Edge API*
 
-[![Version](https://img.shields.io/badge/version-1.5.1-7B2CBF?style=for-the-badge)](https://github.com/Amirh2006/TourneyCore/releases)
+[![Version](https://img.shields.io/badge/version-1.5.2-7B2CBF?style=for-the-badge)](https://github.com/Amirh2006/TourneyCore/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-00F5D4?style=for-the-badge)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.12+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers%20%26%20Pages-F38020?style=for-the-badge&logo=cloudflare&logoColor=white)](https://workers.cloudflare.com/)
@@ -22,7 +22,7 @@
 
 Tournament rules live in `core/` only. The CLI, the bot, and the web API are thin presentation layers, so the same data can be driven seamlessly from any of them.
 
-> **⚡ Serverless Migration (`v1.5.1`):** [`worker/`](worker/README.md) contains the production **Cloudflare Workers + Hono** implementation. It replaces long polling with `POST /webhook`, reads and updates the **Supabase (PostgreSQL)** schema, and serves a secure, role-based REST API for the interactive Mini-App deployed on **Cloudflare Pages**. The Python implementation below remains available for local development until the cut-over is complete.
+> **⚡ Serverless Migration (`v1.5.2`):** [`worker/`](worker/README.md) contains the production **Cloudflare Workers + Hono** implementation. It replaces long polling with `POST /webhook`, reads and updates the **Supabase (PostgreSQL)** schema, and serves a secure, role-based REST API for the interactive Persian/RTL Mini-App deployed on **Cloudflare Pages**. The Python implementation below remains available for local development until the cut-over is complete.
 
 ---
 
@@ -34,6 +34,7 @@ Tournament rules live in `core/` only. The CLI, the bot, and the web API are thi
 - **68 Automated Tests:** Comprehensive `unittest` suite covering bracket logic, CLI, bot, and web layers, executed automatically via GitHub Actions CI.
 
 ### Serverless Production Stack (Cloudflare Workers + Supabase + Mini-App)
+- **Full Persian Localization & RTL Layout (`v1.5.2`):** Native right-to-left (`dir="rtl"`) Mini-App interface styled with the `Vazirmatn` typeface, Cyber-Violet dark theme & Yellow light theme, mirrored 90-degree bracket tree connectors for RTL progression, and fully localized Persian Telegram bot commands, responses, and inline buttons.
 - **Role-Based Access Control (RBAC):** Supports `admin`, `coworker`, `player`, and `guest` roles backed by cryptographically verified Telegram Mini-App authentication.
 - **Interactive In-App Management:** Create and delete tournaments, register players, seed/start brackets, record match scores directly from bracket cards, and promote coworkers.
 - **In-App Announcement Banner & History:** Neon Cyber-Violet/Gold broadcast banner with a scrollable history log and formatted Jalali (`fa-IR`) date/time stamps.
@@ -48,7 +49,7 @@ Tournament rules live in `core/` only. The CLI, the bot, and the web API are thi
 
 ---
 
-## 🛡️ Security (`v1.5.1`)
+## 🛡️ Security
 
 - **Cryptographic Mini-App Auth (`HMAC-SHA256`):** `authMiddleware` validates `X-Telegram-Init-Data` via Web Crypto (`crypto.subtle`) using Telegram's `WebAppData` key derivation and constant-time hash comparison, failing closed to `guest` on invalid signatures.
 - **Replay Attack Mitigation:** Rejects `initData` payloads older than 24 hours (`auth_date` validation).
@@ -110,7 +111,7 @@ python -m bot.main
 
 ## ☁️ Serverless Deployment (Cloudflare + Supabase)
 
-### 1. Supabase Schema Updates (`v1.4.0` – `v1.5.1`)
+### 1. Supabase Schema Updates (`v1.4.0` – `v1.5.2`)
 Run the following SQL in your Supabase SQL Editor to ensure the announcement and username columns exist and refresh the PostgREST schema cache:
 
 ```sql
@@ -214,7 +215,7 @@ cli/         admin command line interface
 bot/         aiogram handlers, notifications and configuration
 web/         read-only JSON API, SSE stream and static file server
 worker/      Cloudflare Workers + Hono serverless API & Telegram webhook
-frontend/    mini-app HTML/CSS/JS (no build step)
+frontend/    RTL Persian mini-app HTML/CSS/JS (no build step)
 tests/       unittest suite (bracket, CLI, bot, web)
 ```
 

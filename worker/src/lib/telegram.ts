@@ -144,6 +144,6 @@ export class TelegramClient {
 /** Build the one-button keyboard that opens the mini-app. */
 export function webAppKeyboard(url: string): InlineKeyboardMarkup {
   return {
-    inline_keyboard: [[{ text: '🏆 Open live bracket', web_app: { url } }]],
+    inline_keyboard: [[{ text: '🏆 مشاهده براکت زنده', web_app: { url } }]],
   };
 }

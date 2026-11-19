@@ -31,7 +31,7 @@ webhookRoutes.onError((err, c) => {
 });
 
 /**
- * `POST /webhook` — the only Telegram entry point.
+ * `POST /webhook` - the only Telegram entry point.
  */
 webhookRoutes.post('/webhook', async (c) => {
   assertWebhookSecret(c);
@@ -159,7 +159,7 @@ async function routeMessage(
     case 'start': {
       const player = await findPlayerByTelegramId(env, from.id);
       const greeting = player
-        ? `Welcome back, ${player.name}!\n\n${WELCOME_TEXT}`
+        ? `خوش آمدی ${player.name}!\n\n${WELCOME_TEXT}`
         : WELCOME_TEXT;
       const appUrl = miniAppUrl(env);
       await bot.sendMessage(
@@ -179,14 +179,13 @@ async function routeMessage(
       if (!appUrl) {
         await bot.sendMessage(
           chatId,
-          'The live bracket mini-app is not configured yet. Ask the ' +
-            'organizer to set MINI_APP_URL to a public HTTPS URL.',
+          'مینی‌اپ براکت زنده هنوز پیکربندی نشده است. لطفاً از مدیر بخواهید آدرس HTTPS معتبری در MINI_APP_URL تنظیم کند.',
         );
         return;
       }
       await bot.sendMessage(
         chatId,
-        '📺 The bracket updates live while you watch.',
+        '📺 براکت مسابقات به‌صورت زنده در مینی‌اپ بروزرسانی می‌شود.',
         webAppKeyboard(appUrl),
       );
       return;
@@ -261,7 +260,7 @@ async function doRegister(
   code: string,
 ): Promise<void> {
   if (!code) {
-    await bot.sendMessage(chatId, 'Usage: /register A1B2C3D4');
+    await bot.sendMessage(chatId, 'روش استفاده: /register A1B2C3D4');
     return;
   }
 
@@ -275,12 +274,12 @@ async function doRegister(
 
     await bot.sendMessage(
       chatId,
-      `✅ Registered as ${player.name}!\n` +
-        `Your entry code ${player.entry_code} is now linked to this account.`,
+      `✅ ثبت‌نام شما با نام ${player.name} انجام شد!\n` +
+        `کد ورود ${player.entry_code} با موفقیت به حساب تلگرام شما متصل شد.`,
     );
   } catch (error) {
     if (error instanceof BotError) {
-      throw new BotError(`Registration failed: ${error.message}`);
+      throw new BotError(`ثبت‌نام ناموفق بود: ${error.message}`);
     }
     throw error;
   }
@@ -315,8 +314,7 @@ async function requirePlayer(
   if (!player) {
     await bot.sendMessage(
       chatId,
-      'You are not registered yet. Send the entry code from your admin, ' +
-        'for example: /register A1B2C3D4',
+      'شما هنوز ثبت‌نام نکرده‌اید. کد ورود دریافتی از مدیر را ارسال کنید (مثال: /register A1B2C3D4).',
     );
     return null;
   }
