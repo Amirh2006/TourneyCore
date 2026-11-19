@@ -1,5 +1,7 @@
 <div align="center">
 
+![TourneyCore — Montazeri University](assets/banner.jpg)
+
 # 🏆 TourneyCore
 
 **A Modern, Framework-Independent Double-Elimination Tournament Manager**  
@@ -210,6 +212,7 @@ The local server is read-only by design — results are recorded by the CLI. `en
 ## 📂 Project Layout
 
 ```text
+assets/      branding assets and README banner
 core/        models, atomic JSON storage, bracket engine (no I/O in models)
 cli/         admin command line interface
 bot/         aiogram handlers, notifications and configuration
@@ -229,6 +232,29 @@ $env:PYTHONPATH='D:\Projects\TourneyCore'
 ```
 
 CI runs the same suite on every push and pull request (`.github/workflows/tests.yml`).
+
+---
+
+## 🤝 Contributing
+
+Contributions, bug reports, and feature ideas are warmly welcome! Whether you want to improve the bracket engine, enhance the RTL Mini-App UI, or add automated tests for the Cloudflare Worker:
+
+1. **Fork** the repository.
+2. Create your feature branch off `develop` (`git checkout -b feature/your-feature develop`).
+3. Commit your changes with clear messages (`git commit -m "feat: add your feature"`).
+4. Push to your branch (`git push origin feature/your-feature`).
+5. Open a **Pull Request** targeting `develop`.
+
+You can also open an [Issue](https://github.com/Amirh2006/TourneyCore/issues) to discuss major changes or report bugs.
+
+---
+
+## 👨‍💻 Author & Contact
+
+**Amirhossein Porsharifi** — *Montazeri University*
+
+[![GitHub](https://img.shields.io/badge/GitHub-@Amirh2006-181717?style=for-the-badge&logo=github&logoColor=white)](https://github.com/Amirh2006)
+[![Email](https://img.shields.io/badge/Email-amir.h.porsharifi%40gmail.com-EA4335?style=for-the-badge&logo=gmail&logoColor=white)](mailto:amir.h.porsharifi@gmail.com)
 
 ---
 
