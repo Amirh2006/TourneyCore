@@ -43,7 +43,7 @@ apiRoutes.post('/systems/:id/players', requireCoworker, async (c) => {
   const systemId = c.req.param('id');
   if (!systemId) throw new ApiError(400, 'bad_request', 'Missing ID.');
   const body = await c.req.json();
-  await addPlayer(c.env, systemId, body.name, body.telegram_id);
+  await addPlayer(c.env, systemId, body.name, body.telegram_username);
   return c.json({ status: 'success' }, 201);
 });
 
@@ -68,44 +68,113 @@ apiRoutes.post('/roles/promote', requireAdmin, async (c) => {
   return c.json({ status: 'success' }, 200);
 });
 
-// Single match notification via Telegram Bot API
+// Single match notification via Telegram Bot API with delivery report and inline Web App button
 apiRoutes.post('/matches/:id/notify', requireCoworker, async (c) => {
   const matchId = c.req.param('id');
   if (!matchId) throw new ApiError(400, 'bad_request', 'Missing match ID.');
+
   const body = await c.req.json();
+  const messageText = typeof body.message === 'string' ? body.message.trim() : '';
+  if (!messageText) throw new ApiError(400, 'bad_request', 'Message text is required.');
+
   const supabaseUrl = c.env.SUPABASE_URL;
   const supabaseKey = c.env.SUPABASE_SERVICE_ROLE_KEY;
+  const botToken = c.env.TELEGRAM_BOT_TOKEN;
   if (!supabaseUrl || !supabaseKey) throw new ApiError(500, 'server_error', 'Supabase credentials missing.');
+  if (!botToken) throw new ApiError(500, 'server_error', 'Telegram bot token missing.');
 
   const matchRes = await fetch(`${supabaseUrl}/rest/v1/matches?id=eq.${matchId}&select=player1_id,player2_id`, {
     headers: { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}`, Accept: 'application/json' }
   });
-  const matches = (await matchRes.json()) as any[];
-  if (!matches || matches.length === 0) throw new ApiError(404, 'not_found', 'Match not found.');
+  const matches = (await matchRes.json()) as Array<{ player1_id: string | null; player2_id: string | null }>;
+  const match = matches?.[0];
+  if (!match) throw new ApiError(404, 'not_found', 'Match not found.');
 
-  const pIds = [matches[0].player1_id, matches[0].player2_id].filter(Boolean);
-  let targetIds: (number | string)[] = [];
+  const pIds = [match.player1_id, match.player2_id].filter(Boolean) as string[];
+  if (pIds.length === 0) {
+    throw new ApiError(400, 'bad_request', 'No players are assigned to this match yet.');
+  }
 
-  if (pIds.length > 0) {
-    const playersRes = await fetch(`${supabaseUrl}/rest/v1/players?id=in.(${pIds.join(',')})&select=telegram_id`, {
+  const playersRes = await fetch(
+    `${supabaseUrl}/rest/v1/players?id=in.(${pIds.join(',')})&select=id,name,telegram_id,telegram_username`,
+    {
       headers: { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}`, Accept: 'application/json' }
-    });
-    const players = (await playersRes.json()) as any[];
-    targetIds = players.map(p => p.telegram_id).filter(Boolean);
-  }
+    }
+  );
+  const players = (await playersRes.json()) as Array<{
+    id: string;
+    name: string;
+    telegram_id: number | null;
+    telegram_username: string | null;
+  }>;
 
-  if (targetIds.length === 0) throw new ApiError(400, 'bad_request', 'Neither player has a Telegram ID.');
+  // Attach inline button to open the Mini App when MINI_APP_URL is a valid HTTPS URL
+  const appUrl = c.env.MINI_APP_URL?.trim();
+  const replyMarkup =
+    appUrl && appUrl.startsWith('https://')
+      ? {
+          inline_keyboard: [[{ text: '📊 مشاهده براکت', web_app: { url: appUrl } }]],
+        }
+      : undefined;
 
-  const botToken = c.env.TELEGRAM_BOT_TOKEN;
-  for (const chatId of targetIds) {
+  let successCount = 0;
+  const reportLines: string[] = [];
+
+  for (const player of players) {
+    if (!player.telegram_id) {
+      if (player.telegram_username) {
+        reportLines.push(`❌ ${player.name} (@${player.telegram_username}): هنوز ربات را /start نکرده یا مینی‌اپ را باز نکرده است.`);
+      } else {
+        reportLines.push(`❌ ${player.name}: یوزرنیم تلگرام ثبت نشده است.`);
+      }
+      continue;
+    }
+
     try {
-      await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chat_id: chatId, text: `🔔 Match Alert:\n\n${body.message}` })
+      const payload: Record<string, unknown> = {
+        chat_id: player.telegram_id,
+        text: `🔔 اطلاعیه مسابقه:\n\n${messageText}`,
+      };
+      if (replyMarkup) {
+        payload.reply_markup = replyMarkup;
+      }
+
+      const tgRes = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
       });
-    } catch (e) { console.error(`Error: ${e}`); }
+
+      const tgBody = (await tgRes.json().catch(() => ({}))) as { ok?: boolean; description?: string };
+
+      if (tgRes.ok && tgBody.ok) {
+        successCount += 1;
+        reportLines.push(`✅ ${player.name}: ارسال شد`);
+      } else {
+        const desc = (tgBody.description || '').toLowerCase();
+        let reason = tgBody.description || `HTTP ${tgRes.status}`;
+        if (desc.includes('blocked')) {
+          reason = 'ربات را بلاک کرده است';
+        } else if (desc.includes('chat not found') || desc.includes('initiate conversation')) {
+          reason = 'هنوز ربات را /start نکرده است';
+        }
+        reportLines.push(`❌ ${player.name}: ${reason}`);
+      }
+    } catch (e) {
+      console.error(`Failed to notify player ${player.id}:`, e);
+      reportLines.push(`❌ ${player.name}: خطای ارتباط با سرور تلگرام`);
+    }
   }
-  return c.json({ status: 'success' }, 200);
+
+  return c.json(
+    {
+      status: 'success',
+      sent: successCount,
+      total: players.length,
+      report: reportLines.join('\n'),
+    },
+    200,
+  );
 });
 
 // Broadcast route (In-App Banner with History)
@@ -125,7 +194,7 @@ apiRoutes.post('/systems/:id/broadcast', requireCoworker, async (c) => {
   const sysData = (await sysRes.json()) as any[];
   if (!sysData || sysData.length === 0) throw new ApiError(404, 'not_found', 'System not found.');
 
-  let announcements: Array<{text: string, date: string}> = [];
+  let announcements: Array<{ text: string; date: string }> = [];
   try {
     if (sysData[0].announcement) {
       const parsed = JSON.parse(sysData[0].announcement);

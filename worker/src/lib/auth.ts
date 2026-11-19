@@ -4,18 +4,19 @@ import type { Env } from '../env';
 
 const ADMIN_IDS = [8725080670, 999999];
 
-// 🚀 Precise type definitions for raising TypeScript errors in Hono
+// Precise type definitions for Hono context variables
 type AppContext = {
   Bindings: Env;
   Variables: {
-    user: { id: number | null };
+    user: { id: number | null; username: string | null };
     role: string;
   };
 };
 
 export async function authMiddleware(c: Context<AppContext>, next: Next) {
   const initData = c.req.header('X-Telegram-Init-Data');
-  let telegramId: number | null = null; // Exact type of the variable
+  let telegramId: number | null = null;
+  let telegramUsername: string | null = null;
 
   if (initData) {
     try {
@@ -23,7 +24,11 @@ export async function authMiddleware(c: Context<AppContext>, next: Next) {
       const userStr = urlParams.get('user');
       if (userStr) {
         const userObj = JSON.parse(userStr);
-        telegramId = Number(userObj.id);
+        telegramId = userObj.id ? Number(userObj.id) : null;
+        telegramUsername =
+          typeof userObj.username === 'string' && userObj.username.trim()
+            ? userObj.username.replace(/^@+/, '').trim().toLowerCase()
+            : null;
       }
     } catch (e) {
       console.error('Failed to parse initData', e);
@@ -33,10 +38,24 @@ export async function authMiddleware(c: Context<AppContext>, next: Next) {
   let role = 'guest';
 
   if (telegramId) {
+    const supabase = getSupabase(c.env);
+
+    // Automatically link unlinked player rows matching this Telegram username
+    if (telegramUsername) {
+      try {
+        await supabase
+          .from('players')
+          .update({ telegram_id: telegramId, telegram_username: telegramUsername })
+          .ilike('telegram_username', telegramUsername)
+          .is('telegram_id', null);
+      } catch (e) {
+        console.error('Failed to auto-link player by username:', e);
+      }
+    }
+
     if (ADMIN_IDS.includes(telegramId)) {
       role = 'admin';
     } else {
-      const supabase = getSupabase(c.env);
       const { data } = await supabase
         .from('user_roles')
         .select('role')
@@ -51,7 +70,7 @@ export async function authMiddleware(c: Context<AppContext>, next: Next) {
     }
   }
 
-  c.set('user', { id: telegramId });
+  c.set('user', { id: telegramId, username: telegramUsername });
   c.set('role', role);
 
   await next();

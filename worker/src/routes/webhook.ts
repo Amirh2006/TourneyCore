@@ -2,6 +2,7 @@ import { Hono, type Context } from 'hono';
 
 import type { Env } from '../env';
 import { ApiError, BotError } from '../lib/errors';
+import { getSupabase } from '../lib/supabase';
 import {
   TelegramClient,
   webAppKeyboard,
@@ -22,17 +23,15 @@ import { listMatches, listPlayers } from '../services/queries';
 import type { PlayerRow } from '../types';
 
 export const webhookRoutes = new Hono<{ Bindings: Env }>();
+
 webhookRoutes.onError((err, c) => {
-  console.error("🔥 FATAL SERVER ERROR:", err.name, err.message, err.stack);
+  console.error('FATAL SERVER ERROR:', err.name, err.message, err.stack);
   // Returning ok: true causes Telegram to discard queued processed messages
   return c.json({ ok: true });
 });
+
 /**
  * `POST /webhook` — the only Telegram entry point.
- *
- * Long polling is gone: Telegram delivers each update as an HTTPS request.
- * The handler processes the update inline and answers 200 so the update is
- * acknowledged; unexpected failures answer 500 and Telegram retries.
  */
 webhookRoutes.post('/webhook', async (c) => {
   assertWebhookSecret(c);
@@ -88,6 +87,31 @@ function safeEqual(left: string, right: string): boolean {
   return difference === 0;
 }
 
+/** Link any unlinked player rows matching this Telegram user's username. */
+async function linkPlayerByUsername(
+  env: Env,
+  telegramId: number,
+  username: string | undefined,
+): Promise<void> {
+  if (!username) {
+    return;
+  }
+  const normalized = username.replace(/^@+/, '').trim().toLowerCase();
+  if (!normalized) {
+    return;
+  }
+  try {
+    const supabase = getSupabase(env);
+    await supabase
+      .from('players')
+      .update({ telegram_id: telegramId, telegram_username: normalized })
+      .ilike('telegram_username', normalized)
+      .is('telegram_id', null);
+  } catch (error) {
+    console.error('Failed to link player by username in webhook:', error);
+  }
+}
+
 async function handleUpdate(env: Env, update: TelegramUpdate): Promise<void> {
   const message = update.message;
   if (!message?.from || message.from.is_bot) {
@@ -98,6 +122,9 @@ async function handleUpdate(env: Env, update: TelegramUpdate): Promise<void> {
   if (!text) {
     return;
   }
+
+  // Auto-link player account by username before routing commands
+  await linkPlayerByUsername(env, message.from.id, message.from.username);
 
   const bot = new TelegramClient(env.TELEGRAM_BOT_TOKEN);
 

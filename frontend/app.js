@@ -22,21 +22,22 @@
   };
 
   window.showMatchInfo = function(matchId) {
-      if(tg && tg.showAlert) tg.showAlert(`Match ID: ${matchId}`);
+      if (tg && tg.showAlert) tg.showAlert(`Match ID: ${matchId}`);
       else alert(`Match ID: ${matchId}`);
   };
 
-  // Single match notification
+  // Single match notification with delivery report
   window.promptForNotification = function(matchId) {
       askPrompt("متن پیام خود را برای بازیکنان این مسابقه بنویسید:", async (message) => {
           if (!message) return;
           try {
-              await fetchJson(`/api/matches/${matchId}/notify`, {
+              const res = await fetchJson(`/api/matches/${matchId}/notify`, {
                   method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: message })
               });
-              if(tg && tg.showAlert) tg.showAlert("پیام با موفقیت ارسال شد!"); else alert("پیام با موفقیت ارسال شد!");
+              const output = res.report || "پیام با موفقیت ارسال شد!";
+              if (tg && tg.showAlert) tg.showAlert(output); else alert(output);
           } catch (err) {
-              if(tg && tg.showAlert) tg.showAlert(`خطا: ${err.message}`); else alert(`خطا: ${err.message}`);
+              if (tg && tg.showAlert) tg.showAlert(`خطا: ${err.message}`); else alert(`خطا: ${err.message}`);
           }
       });
   };
@@ -142,7 +143,7 @@
         announcements = JSON.parse(sys.announcement);
         if (!Array.isArray(announcements)) announcements = [{ text: sys.announcement, date: new Date().toISOString() }];
       }
-    } catch(e) {
+    } catch (e) {
       if (sys.announcement) announcements = [{ text: sys.announcement, date: new Date().toISOString() }];
     }
 
@@ -218,7 +219,7 @@
     section.append(head);
     const rounds = new Map(); matches.forEach(m => { if (!rounds.has(m.round)) rounds.set(m.round, []); rounds.get(m.round).push(m); });
     const grid = node("div", "rounds");
-    [...rounds.keys()].sort((a,b)=>a-b).forEach(r => {
+    [...rounds.keys()].sort((a, b) => a - b).forEach(r => {
       const col = node("div", "round");
       const roundTitle = node("div", "round__title", `Round ${r} - Playoffs`);
       col.append(roundTitle);
@@ -285,8 +286,11 @@
   }
 
   function askConfirm(message, callback) { if (tg && tg.showConfirm) { tg.showConfirm(message, callback); } else { callback(confirm(message)); } }
+
+  // Allow empty string submission (e.g. optional fields or clearing announcements) while ignoring Cancel
   function askPrompt(message, callback) {
-    if (tg && tg.showPopup) { const val = prompt(message); if(val) callback(val); } else { const val = prompt(message); if (val) callback(val); }
+    const val = prompt(message);
+    if (val !== null) callback(val.trim());
   }
 
   function bindEvents() {
@@ -314,7 +318,7 @@
             await fetchJson(`/api/systems/${state.currentId}/broadcast`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ message: message }) // Sends null if empty
+              body: JSON.stringify({ message: message || null }) // Sends null if empty
             });
             await loadDashboard({ manual: true });
           } catch (err) {
@@ -327,6 +331,7 @@
 
     document.getElementById('btn-create-tournament')?.addEventListener('click', () => {
       askPrompt("Enter tournament name:", async (name) => {
+        if (!name) return;
         try { await fetchJson('/api/systems', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) }); await loadSystems(); } catch (err) { alert(`Error: ${err.message}`); }
       });
     });
@@ -339,16 +344,16 @@
       });
     });
 
-    // Add player (includes telegram ID)
+    // Add player with optional Telegram username
     document.getElementById('btn-add-player')?.addEventListener('click', () => {
       if (!state.currentId) return alert("Select a tournament first!");
       askPrompt("اسم بازیکن را وارد کنید:", (name) => {
         if (!name) return;
-        askPrompt("آیدی عددی تلگرام بازیکن را وارد کنید (اگر ندارد خالی بگذارید):", async (telegramId) => {
+        askPrompt("یوزرنیم تلگرام بازیکن را وارد کنید (مثال: @ali - اگر ندارد خالی بگذارید):", async (telegramUsername) => {
           try {
             await fetchJson(`/api/systems/${state.currentId}/players`, {
               method: 'POST', headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ name: name, telegram_id: telegramId ? Number(telegramId) : null })
+              body: JSON.stringify({ name: name, telegram_username: telegramUsername || null })
             });
             await loadDashboard({ manual: true });
           } catch (err) { alert(`Error: ${err.message}`); }
@@ -366,6 +371,7 @@
 
     document.getElementById('promote-btn')?.addEventListener('click', () => {
       askPrompt("Enter Telegram ID to promote:", async (tgId) => {
+        if (!tgId || isNaN(Number(tgId))) return;
         try { await fetchJson('/api/roles/promote', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ telegram_id: Number(tgId), new_role: 'coworker' }) }); alert("Promoted!"); } catch (err) { alert(`Error: ${err.message}`); }
       });
     });

@@ -87,16 +87,39 @@ export async function deleteSystem(env: Env, systemId: string): Promise<void> {
   if (error) throw new ApiError(500, 'database_error', `Failed to delete tournament: ${error.message}`);
 }
 
-export async function addPlayer(env: Env, systemId: string, name: string, telegram_id?: number | null): Promise<void> {
+// Normalize and store telegram_username when adding a player manually
+export async function addPlayer(
+  env: Env,
+  systemId: string,
+  name: string,
+  telegramUsername?: string | null,
+): Promise<void> {
   const supabase = getSupabase(env);
-  if (!name || name.trim() === '') throw new ApiError(400, 'invalid_input', 'Player name is required');
-  const { error } = await supabase.from('players').insert([{ name: name.trim(), system_id: systemId, status: 'registered', role: 'player', wins: 0, losses: 0, telegram_id: telegram_id }]);
+  if (!name || name.trim() === '') {
+    throw new ApiError(400, 'invalid_input', 'Player name is required');
+  }
+
+  const normalizedUsername = telegramUsername
+    ? telegramUsername.replace(/^@+/, '').trim().toLowerCase() || null
+    : null;
+
+  const row = {
+    name: name.trim(),
+    system_id: systemId,
+    status: 'registered',
+    role: 'player',
+    wins: 0,
+    losses: 0,
+    telegram_username: normalizedUsername,
+  };
+
+  const { error } = await supabase.from('players').insert([row]);
   if (error) {
     if (error.code === '23502' && error.message.includes('id')) {
-        const randomId = Math.floor(Math.random() * 1000000);
-        await supabase.from('players').insert([{ id: randomId, name: name.trim(), system_id: systemId, status: 'registered', role: 'player', wins: 0, losses: 0, telegram_id: telegram_id }]);
+      const randomId = Math.floor(Math.random() * 1000000);
+      await supabase.from('players').insert([{ id: randomId, ...row }]);
     } else {
-        throw new ApiError(500, 'database_error', `Failed to add player: ${error.message}`);
+      throw new ApiError(500, 'database_error', `Failed to add player: ${error.message}`);
     }
   }
 }
