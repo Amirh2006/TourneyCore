@@ -22,24 +22,24 @@
   };
 
   window.showMatchInfo = function(matchId) {
-      if (tg && tg.showAlert) tg.showAlert(`Match ID: ${matchId}`);
-      else alert(`Match ID: ${matchId}`);
+    if (tg && tg.showAlert) tg.showAlert(`Match ID: ${matchId}`);
+    else alert(`Match ID: ${matchId}`);
   };
 
   // Single match notification with delivery report
   window.promptForNotification = function(matchId) {
-      askPrompt("متن پیام خود را برای بازیکنان این مسابقه بنویسید:", async (message) => {
-          if (!message) return;
-          try {
-              const res = await fetchJson(`/api/matches/${matchId}/notify`, {
-                  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: message })
-              });
-              const output = res.report || "پیام با موفقیت ارسال شد!";
-              if (tg && tg.showAlert) tg.showAlert(output); else alert(output);
-          } catch (err) {
-              if (tg && tg.showAlert) tg.showAlert(`خطا: ${err.message}`); else alert(`خطا: ${err.message}`);
-          }
-      });
+    askPrompt("متن پیام خود را برای بازیکنان این مسابقه بنویسید:", async (message) => {
+      if (!message) return;
+      try {
+        const res = await fetchJson(`/api/matches/${encodeURIComponent(matchId)}/notify`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: message })
+        });
+        const output = res.report || "پیام با موفقیت ارسال شد!";
+        if (tg && tg.showAlert) tg.showAlert(output); else alert(output);
+      } catch (err) {
+        if (tg && tg.showAlert) tg.showAlert(`خطا: ${err.message}`); else alert(`خطا: ${err.message}`);
+      }
+    });
   };
 
   function node(tag, className, text) { const el = document.createElement(tag); if (className) el.className = className; if (text !== undefined && text !== null) el.textContent = String(text); return el; }
@@ -126,16 +126,15 @@
   function renderHero(data) {
     const sys = data.system || {}, counts = data.counts || {}, role = data.userRole || 'guest';
 
-    // Banner display logic with history parsing
+    // Banner display logic using safe DOM APIs (XSS-safe)
     let banner = document.getElementById('broadcast-banner');
     if (!banner) {
-      banner = document.createElement('div');
+      banner = node('div', 'broadcast-banner');
       banner.id = 'broadcast-banner';
-      banner.className = 'broadcast-banner';
       dom.hero.parentNode.insertBefore(banner, dom.hero);
     }
 
-    banner.innerHTML = '';
+    banner.replaceChildren();
 
     let announcements = [];
     try {
@@ -148,24 +147,24 @@
     }
 
     if (announcements.length > 0) {
-      const title = document.createElement('div');
-      title.className = 'broadcast-title';
-      title.innerHTML = `📢 <strong>اطلاعیه‌های تورنمنت</strong>`;
+      const title = node('div', 'broadcast-title');
+      title.append(document.createTextNode('📢 '), node('strong', null, 'اطلاعیه‌های تورنمنت'));
       banner.appendChild(title);
 
-      const list = document.createElement('div');
-      list.className = 'broadcast-list';
+      const list = node('div', 'broadcast-list');
 
       announcements.forEach(a => {
-        const item = document.createElement('div');
-        item.className = 'broadcast-item';
+        const item = node('div', 'broadcast-item');
 
         // Convert Gregorian date to Jalali (fa-IR) and extract time
         const dateObj = new Date(a.date);
         const dateStr = dateObj.toLocaleDateString('fa-IR');
         const timeStr = dateObj.toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' });
 
-        item.innerHTML = `<span class="broadcast-time">${dateStr} - ساعت ${timeStr}</span><span class="broadcast-text">${a.text}</span>`;
+        item.append(
+          node('span', 'broadcast-time', `${dateStr} - ساعت ${timeStr}`),
+          node('span', 'broadcast-text', a.text || '')
+        );
         list.appendChild(item);
       });
 
@@ -213,6 +212,26 @@
     dom.brackets.replaceChildren(...sections);
   }
 
+  /** Build a player slot DOM element safely without innerHTML. */
+  function createMatchSlot(player, scoreVal, winner) {
+    const isWinner = Boolean(winner && player && winner.id === player.id);
+    const slot = node("div", isWinner ? "slot slot--winner" : "slot");
+
+    const logoWrap = node("div", "slot__logo");
+    const img = document.createElement("img");
+    const avatarName = encodeURIComponent(player && player.name ? player.name : "?");
+    img.src = `https://ui-avatars.com/api/?name=${avatarName}&background=random&color=fff`;
+    img.alt = "logo";
+    logoWrap.append(img);
+
+    const nameEl = node("div", "slot__name", player && player.name ? player.name : "TBD");
+    const scoreText = scoreVal !== undefined && scoreVal !== null ? String(scoreVal) : "";
+    const scoreEl = node("div", "slot__score", scoreText);
+
+    slot.append(logoWrap, nameEl, scoreEl);
+    return slot;
+  }
+
   function bracketSection(title, matches) {
     const section = node("section", "bracket"), head = node("div", "bracket__head");
     head.append(node("h2", null, title), node("span", "bracket__count", `${matches.length} matches`));
@@ -226,34 +245,36 @@
       const list = node("div", "round__matches");
 
       rounds.get(r).forEach(match => {
-        const wrapper = document.createElement('div');
-        let matchHtml = `
-          <div class="match ${match.status === 'active' ? 'match--active' : ''}">
-            <div class="match__info" onclick="showMatchInfo('${match.id}')">i</div>
-            ${(state.userRole === 'admin' || state.userRole === 'coworker') ? `<div class="match__notify" onclick="promptForNotification('${match.id}')">🔔</div>` : ''}
-            <div class="slot ${match.winner && match.winner.id === (match.player1 ? match.player1.id : null) ? 'slot--winner' : ''}">
-              <div class="slot__logo"><img src="https://ui-avatars.com/api/?name=${match.player1 ? match.player1.name : '?'}&background=random&color=fff" alt="logo"></div>
-              <div class="slot__name">${match.player1 ? match.player1.name : 'TBD'}</div>
-              <div class="slot__score">${match.score ? match.score.player1 : ''}</div>
-            </div>
-            <div class="slot ${match.winner && match.winner.id === (match.player2 ? match.player2.id : null) ? 'slot--winner' : ''}">
-              <div class="slot__logo"><img src="https://ui-avatars.com/api/?name=${match.player2 ? match.player2.name : '?'}&background=random&color=fff" alt="logo"></div>
-              <div class="slot__name">${match.player2 ? match.player2.name : 'TBD'}</div>
-              <div class="slot__score">${match.score ? match.score.player2 : ''}</div>
-            </div>
-          </div>
-        `;
-        wrapper.innerHTML = matchHtml;
-        const card = wrapper.firstElementChild;
+        const card = node("div", match.status === "active" ? "match match--active" : "match");
+
+        const infoBtn = node("div", "match__info", "i");
+        infoBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          window.showMatchInfo(match.id);
+        });
+        card.append(infoBtn);
+
+        if (state.userRole === 'admin' || state.userRole === 'coworker') {
+          const notifyBtn = node("div", "match__notify", "🔔");
+          notifyBtn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            window.promptForNotification(match.id);
+          });
+          card.append(notifyBtn);
+        }
+
+        card.append(
+          createMatchSlot(match.player1, match.score ? match.score.player1 : "", match.winner),
+          createMatchSlot(match.player2, match.score ? match.score.player2 : "", match.winner)
+        );
+
         if ((state.userRole === 'admin' || state.userRole === 'coworker') && !match.is_bye && match.status !== 'completed' && match.player1 && match.player2) {
           card.style.cursor = "pointer";
           card.style.border = "1px solid var(--accent)";
           card.title = "Click to record score";
-          card.addEventListener("click", (e) => {
-              if (e.target.classList.contains('match__info') || e.target.classList.contains('match__notify')) return;
-              promptForScore(match);
-          });
+          card.addEventListener("click", () => promptForScore(match));
         }
+
         list.append(card);
       });
       col.append(list);
@@ -275,7 +296,7 @@
         else return alert("Ties are not allowed!");
 
         try {
-          await fetchJson(`/api/matches/${match.id}`, {
+          await fetchJson(`/api/matches/${encodeURIComponent(match.id)}`, {
             method: 'PUT', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ score_player1: s1, score_player2: s2, winner_id, loser_id })
           });
@@ -315,7 +336,7 @@
         if (!state.currentId) return alert("Select a tournament first!");
         askPrompt("متن اطلاعیه را بنویسید تا در بالای مینی‌اپ نمایش داده شود:\n(برای حذف تمام اطلاعیه‌ها، این کادر را کاملاً خالی بگذارید)", async (message) => {
           try {
-            await fetchJson(`/api/systems/${state.currentId}/broadcast`, {
+            await fetchJson(`/api/systems/${encodeURIComponent(state.currentId)}/broadcast`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ message: message || null }) // Sends null if empty
@@ -340,7 +361,7 @@
       if (!state.currentId) return alert("Select a tournament first!");
       askConfirm("Delete this tournament permanently?", async (ok) => {
         if (!ok) return;
-        try { await fetchJson(`/api/systems/${state.currentId}`, { method: 'DELETE' }); await loadSystems(); } catch (err) { alert(`Error: ${err.message}`); }
+        try { await fetchJson(`/api/systems/${encodeURIComponent(state.currentId)}`, { method: 'DELETE' }); await loadSystems(); } catch (err) { alert(`Error: ${err.message}`); }
       });
     });
 
@@ -351,7 +372,7 @@
         if (!name) return;
         askPrompt("یوزرنیم تلگرام بازیکن را وارد کنید (مثال: @ali - اگر ندارد خالی بگذارید):", async (telegramUsername) => {
           try {
-            await fetchJson(`/api/systems/${state.currentId}/players`, {
+            await fetchJson(`/api/systems/${encodeURIComponent(state.currentId)}/players`, {
               method: 'POST', headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ name: name, telegram_username: telegramUsername || null })
             });
@@ -365,7 +386,7 @@
       if (!state.currentId) return alert("Select a tournament first!");
       askConfirm("Start the bracket? Registration will be closed.", async (ok) => {
         if (!ok) return;
-        try { await fetchJson(`/api/systems/${state.currentId}/start`, { method: 'POST' }); await loadDashboard({ manual: true }); } catch (err) { alert(`Error: ${err.message}`); }
+        try { await fetchJson(`/api/systems/${encodeURIComponent(state.currentId)}/start`, { method: 'POST' }); await loadDashboard({ manual: true }); } catch (err) { alert(`Error: ${err.message}`); }
       });
     });
 
